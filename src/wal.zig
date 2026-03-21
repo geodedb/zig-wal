@@ -12,6 +12,7 @@
 const std = @import("std");
 const record = @import("record.zig");
 const recovery_mod = @import("recovery.zig");
+const compaction = @import("compaction.zig");
 
 // ============================================================================
 // Options
@@ -153,6 +154,36 @@ pub const WriteAheadLog = struct {
     /// Use this when `options.manual_sync` is `true`.
     pub fn sync(self: *WriteAheadLog) !void {
         try self.file.sync();
+    }
+
+    /// Remove all records with LSN <= `up_to_lsn` by rewriting the WAL.
+    ///
+    /// The rewrite is atomic (temp file + fsync + rename).  After a successful
+    /// compaction the write cursor is positioned at the new end of file and
+    /// `bytes_since_compact` is reset to zero.
+    ///
+    /// If compaction fails the file handle is reopened so the WAL remains
+    /// usable, and the original error is propagated.
+    pub fn compact(self: *WriteAheadLog, up_to_lsn: u64) !void {
+        // Close the current file handle — compaction will rename a new file
+        // over it and we must not hold a stale handle afterward.
+        self.file.close();
+
+        // Run the atomic rewrite.  On error, reopen the original file so the
+        // WAL remains in a consistent (if unchanged) state.
+        const result = compaction.compact(self.dir, self.filename, up_to_lsn) catch |err| {
+            self.file = try self.dir.openFile(self.filename, .{ .mode = .read_write });
+            try self.file.seekFromEnd(0);
+            return err;
+        };
+
+        // Reopen the (now compacted) file for appending.
+        self.file = try self.dir.openFile(self.filename, .{ .mode = .read_write });
+        try self.file.seekFromEnd(0);
+
+        // Update bookkeeping.
+        self.file_end = result.new_size;
+        self.bytes_since_compact = 0;
     }
 
     // -------------------------------------------------------------------------
@@ -453,4 +484,47 @@ test "iterator: empty WAL returns null immediately" {
 
     const entry = try iter.next();
     try std.testing.expect(entry == null);
+}
+
+test "compact: removes records and allows continued append" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+    defer wal.deinit();
+
+    // Append three records — LSNs 1, 2, 3.
+    _ = try wal.append("one");
+    _ = try wal.append("two");
+    _ = try wal.append("three");
+
+    // Compact at LSN 2: records with LSN <= 2 ("one", "two") are removed.
+    try wal.compact(2);
+
+    // bytes_since_compact resets to 0 after a successful compaction.
+    try std.testing.expectEqual(@as(u64, 0), wal.bytesSinceCompact());
+
+    // Append a fourth record — should receive LSN 4 (current_lsn is preserved).
+    const lsn4 = try wal.append("four");
+    try std.testing.expectEqual(@as(u64, 4), lsn4);
+
+    // Iterate from 0: should see only LSN 3 ("three") and LSN 4 ("four").
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+
+    var maybe_e3 = try iter.next();
+    try std.testing.expect(maybe_e3 != null);
+    defer maybe_e3.?.deinit();
+    try std.testing.expectEqual(@as(u64, 3), maybe_e3.?.lsn);
+    try std.testing.expectEqualSlices(u8, "three", maybe_e3.?.payload);
+
+    var maybe_e4 = try iter.next();
+    try std.testing.expect(maybe_e4 != null);
+    defer maybe_e4.?.deinit();
+    try std.testing.expectEqual(@as(u64, 4), maybe_e4.?.lsn);
+    try std.testing.expectEqualSlices(u8, "four", maybe_e4.?.payload);
+
+    const eof = try iter.next();
+    try std.testing.expect(eof == null);
 }
