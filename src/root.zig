@@ -31,7 +31,7 @@ const std = @import("std");
 pub const version = "0.1.0";
 
 // Re-export submodules here as the library grows:
-// pub const submodule = @import("submodule.zig");
+pub const atomic = @import("atomic.zig");
 
 // ============================================================================
 // Public Types
