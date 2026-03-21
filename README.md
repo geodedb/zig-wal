@@ -3,14 +3,24 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.15.1+-orange.svg)](https://ziglang.org/)
 
-A Zig library for wal
+A generic, payload-agnostic Write-Ahead Log (WAL) engine for Zig. Provides
+crash-safe, CRC-verified, optionally-encrypted append-only record storage with
+compaction support.
+
+Extracted from the shared mechanics of two production WAL implementations:
+- [Geode](https://gitlab.com/devnw/codepros/geode) — graph database delta persistence
+- [Raft](https://gitlab.com/devnw/zig/raft) — consensus log entry persistence
 
 ## Features
 
-- **Zero Dependencies**: Pure Zig standard library only
-- **Memory Safe**: Proper allocation patterns with no leaks
-- **Cross-Platform**: Linux, macOS, Windows support
-- **Well Tested**: Comprehensive unit and integration tests
+- **Payload-agnostic** — stores opaque byte payloads; callers serialize their own domain types
+- **CRC32 integrity** — every record is checksummed on write and verified on read
+- **Crash recovery** — linear scan with torn write detection and automatic truncation
+- **Atomic compaction** — rewrite-based compaction via temp file + fsync + rename
+- **Optional AES-256-GCM encryption** — per-record encryption with random nonces
+- **LSN ordering** — monotonically increasing log sequence numbers for watermark-based compaction
+- **Zero dependencies** — pure Zig standard library only
+- **Single-file simplicity** — no segment rotation; one file per WAL instance
 
 ## Installation
 
@@ -30,11 +40,11 @@ Add to your `build.zig.zon`:
 Then in your `build.zig`:
 
 ```zig
-const wal = b.dependency("wal", .{
+const wal_dep = b.dependency("wal", .{
     .target = target,
     .optimize = optimize,
 });
-exe.root_module.addImport("wal", wal.module("wal"));
+exe.root_module.addImport("wal", wal_dep.module("wal"));
 ```
 
 ## Quick Start
@@ -44,11 +54,40 @@ const std = @import("std");
 const wal = @import("wal");
 
 pub fn main() !void {
-    try wal.init(.{
-        .debug = true,
-    });
+    var allocator = std.heap.page_allocator;
+
+    // Open or create a WAL
+    var log = try wal.WriteAheadLog.init(allocator, "/tmp/my-app.wal", .{});
+    defer log.deinit();
+
+    // Append records (payload is opaque bytes — serialize your own types)
+    const lsn1 = try log.append("hello world");
+    const lsn2 = try log.append("second entry");
+
+    // Iterate records
+    var iter = log.iterator(0);
+    while (try iter.next()) |*record| {
+        defer record.deinit();
+        std.debug.print("LSN={d} payload={s}\n", .{ record.lsn, record.payload });
+    }
+
+    // Compact (remove records with LSN <= lsn1)
+    try log.compact(lsn1);
 }
 ```
+
+### With Encryption
+
+```zig
+var log = try wal.WriteAheadLog.init(allocator, "/tmp/secure.wal", .{
+    .encryption_key = my_256_bit_key,
+});
+```
+
+## Design
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the full architecture, record format
+specification, crash safety model, and implementation plan.
 
 ## Requirements
 
@@ -60,19 +99,15 @@ pub fn main() !void {
 # Build the library
 make build
 
-# Run tests
+# Run unit tests
 make test
 
-# Quick development iteration
-make dev
+# Run integration tests
+make test-integration
 
 # Full CI pipeline
 make ci
 ```
-
-## Documentation
-
-See the [docs](docs/) directory for detailed documentation.
 
 ## Contributing
 
