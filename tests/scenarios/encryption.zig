@@ -126,3 +126,50 @@ test "encryption: batch append with encryption" {
 
     try std.testing.expect((try iter.next()) == null);
 }
+
+test "encryption: compaction of encrypted WAL preserves kept records" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    // Create an encrypted WAL and append 5 records.
+    var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+        .encryption_key = key,
+    });
+    defer log.deinit();
+
+    _ = try log.append("enc-record-1");
+    _ = try log.append("enc-record-2");
+    _ = try log.append("enc-record-3");
+    _ = try log.append("enc-record-4");
+    _ = try log.append("enc-record-5");
+
+    try std.testing.expectEqual(@as(u64, 5), log.currentLsn());
+
+    // Compact at LSN 3 — records 1, 2, 3 should be removed; 4 and 5 kept.
+    try log.compact(3);
+
+    try std.testing.expectEqual(@as(u64, 5), log.currentLsn());
+    try std.testing.expectEqual(@as(u64, 0), log.bytesSinceCompact());
+
+    // Iterate from 0 — should see only records 4 and 5.
+    var iter = try log.iterator(0);
+    defer iter.deinit();
+
+    var maybe_e4 = try iter.next();
+    try std.testing.expect(maybe_e4 != null);
+    defer maybe_e4.?.deinit();
+    try std.testing.expectEqual(@as(u64, 4), maybe_e4.?.lsn);
+    try std.testing.expectEqualSlices(u8, "enc-record-4", maybe_e4.?.payload);
+
+    var maybe_e5 = try iter.next();
+    try std.testing.expect(maybe_e5 != null);
+    defer maybe_e5.?.deinit();
+    try std.testing.expectEqual(@as(u64, 5), maybe_e5.?.lsn);
+    try std.testing.expectEqualSlices(u8, "enc-record-5", maybe_e5.?.payload);
+
+    try std.testing.expect((try iter.next()) == null);
+}

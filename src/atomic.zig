@@ -8,34 +8,41 @@
 
 const std = @import("std");
 
-/// The temporary filename used during atomic writes.
-const tmp_filename = "wal.tmp";
-
 /// Atomically writes `data` to `filename` within `dir`.
 ///
 /// The write is performed by:
-///   1. Creating (or truncating) a temporary file "wal.tmp" in `dir`
+///   1. Creating (or truncating) a temporary file "`filename`.tmp" in `dir`
 ///   2. Writing all `data` to the temporary file
 ///   3. fsync-ing the temporary file to flush OS buffers to disk
 ///   4. Closing the temporary file
-///   5. Renaming "wal.tmp" to `filename` (atomic on POSIX via renameat)
+///   5. Renaming "`filename`.tmp" to `filename` (atomic on POSIX via renameat)
+///
+/// The temp file is derived from `filename` by appending ".tmp", so two
+/// concurrent `atomicWriteFile` calls for different filenames in the same
+/// directory will not collide on the same temp file.
 ///
 /// On any error the temporary file is closed and deleted before returning.
 ///
 /// Note: This function is NOT thread-safe. Callers must synchronize concurrent
-/// calls that target the same directory.
+/// calls that target the same directory and same filename.
+///
+/// Returns `error.FilenameTooLong` if `filename` is too long to derive a
+/// temp name from (limit: 251 bytes for the base name).
 pub fn atomicWriteFile(dir: std.fs.Dir, filename: []const u8, data: []const u8) !void {
-    var tmp_file = try dir.createFile(tmp_filename, .{ .truncate = true });
+    var tmp_name_buf: [256]u8 = undefined;
+    const tmp_name = std.fmt.bufPrint(&tmp_name_buf, "{s}.tmp", .{filename}) catch return error.FilenameTooLong;
+
+    var tmp_file = try dir.createFile(tmp_name, .{ .truncate = true });
     errdefer {
         tmp_file.close();
-        dir.deleteFile(tmp_filename) catch {};
+        dir.deleteFile(tmp_name) catch {};
     }
 
     try tmp_file.writeAll(data);
     try tmp_file.sync();
     tmp_file.close();
 
-    try dir.rename(tmp_filename, filename);
+    try dir.rename(tmp_name, filename);
 }
 
 // ============================================================================

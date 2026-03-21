@@ -139,11 +139,13 @@ pub const WriteAheadLog = struct {
         return lsn;
     }
 
-    /// Append multiple records in a single batch with a single `fsync`.
+    /// Append multiple records in a single batch with at most one `fsync`.
     ///
-    /// All records are written before the sync is issued, regardless of the
-    /// `manual_sync` option.  This amortises the sync cost across many
-    /// appends.
+    /// All records are written before the sync decision is made.  If
+    /// `options.manual_sync` is `false` (the default), a single `fsync` is
+    /// issued after all records are written, amortising the sync cost across
+    /// many appends.  If `options.manual_sync` is `true`, no automatic sync
+    /// is issued and the caller is responsible for calling `sync()` explicitly.
     ///
     /// Returns the LSN assigned to the last record in the batch.
     /// Errors if `payloads` is empty (there is nothing to flush).
@@ -201,7 +203,12 @@ pub const WriteAheadLog = struct {
 
         // Run the atomic rewrite.  On error, reopen the original file so the
         // WAL remains in a consistent (if unchanged) state.
-        const result = compaction.compact(self.dir, self.filename, up_to_lsn) catch |err| {
+        const result = compaction.compact(
+            self.dir,
+            self.filename,
+            up_to_lsn,
+            if (self.options.encryption_key) |*key| key else null,
+        ) catch |err| {
             self.file = try self.dir.openFile(self.filename, .{ .mode = .read_write });
             try self.file.seekFromEnd(0);
             return err;
