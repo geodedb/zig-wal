@@ -13,6 +13,7 @@ const std = @import("std");
 const record = @import("record.zig");
 const recovery_mod = @import("recovery.zig");
 const compaction = @import("compaction.zig");
+const encryption = @import("encryption.zig");
 
 // ============================================================================
 // Options
@@ -70,7 +71,11 @@ pub const WriteAheadLog = struct {
         errdefer file.close();
 
         // Scan forward from byte 0 to find the last valid record boundary.
-        const info = try recovery_mod.recover(allocator, file);
+        // Use the encryption-aware scanner when a key is provided.
+        const info = if (options.encryption_key) |*key|
+            try recovery_mod.recoverWithKey(allocator, file, key)
+        else
+            try recovery_mod.recover(allocator, file);
 
         // Truncate any bytes beyond the last valid record (torn writes, etc.).
         try file.setEndPos(info.valid_end);
@@ -109,10 +114,23 @@ pub const WriteAheadLog = struct {
         self.current_lsn += 1;
         const lsn = self.current_lsn;
 
-        const bytes_written = try record.writeToFile(self.file, self.allocator, lsn, payload);
+        if (self.options.encryption_key) |*key| {
+            // Encrypt-then-write path: serialize → encrypt → write blob.
+            const plaintext = try record.serialize(self.allocator, lsn, payload);
+            defer self.allocator.free(plaintext);
 
-        self.file_end += bytes_written;
-        self.bytes_since_compact += bytes_written;
+            const blob = try encryption.encryptRecord(self.allocator, key, plaintext);
+            defer self.allocator.free(blob);
+
+            try self.file.writeAll(blob);
+            self.file_end += blob.len;
+            self.bytes_since_compact += blob.len;
+        } else {
+            // Plaintext path.
+            const bytes_written = try record.writeToFile(self.file, self.allocator, lsn, payload);
+            self.file_end += bytes_written;
+            self.bytes_since_compact += bytes_written;
+        }
 
         if (!self.options.manual_sync) {
             try self.file.sync();
@@ -137,9 +155,21 @@ pub const WriteAheadLog = struct {
             self.current_lsn += 1;
             last_lsn = self.current_lsn;
 
-            const bytes_written = try record.writeToFile(self.file, self.allocator, last_lsn, payload);
-            self.file_end += bytes_written;
-            self.bytes_since_compact += bytes_written;
+            if (self.options.encryption_key) |*key| {
+                const plaintext = try record.serialize(self.allocator, last_lsn, payload);
+                defer self.allocator.free(plaintext);
+
+                const blob = try encryption.encryptRecord(self.allocator, key, plaintext);
+                defer self.allocator.free(blob);
+
+                try self.file.writeAll(blob);
+                self.file_end += blob.len;
+                self.bytes_since_compact += blob.len;
+            } else {
+                const bytes_written = try record.writeToFile(self.file, self.allocator, last_lsn, payload);
+                self.file_end += bytes_written;
+                self.bytes_since_compact += bytes_written;
+            }
         }
 
         if (!self.options.manual_sync) {
@@ -216,6 +246,7 @@ pub const WriteAheadLog = struct {
             .allocator = self.allocator,
             .from_lsn = from_lsn,
             .done = false,
+            .encryption_key = if (self.options.encryption_key) |k| k else null,
         };
     }
 
@@ -225,6 +256,7 @@ pub const WriteAheadLog = struct {
         allocator: std.mem.Allocator,
         from_lsn: u64,
         done: bool,
+        encryption_key: ?[32]u8,
 
         /// A single WAL entry returned by the iterator.
         ///
@@ -252,47 +284,114 @@ pub const WriteAheadLog = struct {
             if (self.done) return null;
 
             while (true) {
-                // Read the 12-byte header along with its raw bytes (needed by
-                // readPayloadAndVerify to re-derive the CRC).
-                const maybe_header = try record.readHeaderRaw(self.file);
-                if (maybe_header == null) {
+                // Peek at the first 12 bytes to detect encrypted vs plaintext.
+                var peek_buf: [12]u8 = undefined;
+                const peek_n = try self.file.readAll(&peek_buf);
+                if (peek_n < 12) {
                     self.done = true;
-                    return null; // clean EOF
+                    return null; // clean EOF or torn header
                 }
-                const hdr = maybe_header.?;
 
-                // Read the payload and verify the CRC.  Returns null on torn
-                // writes; returns error.CrcMismatch on corruption.
-                const maybe_payload = record.readPayloadAndVerify(
-                    self.file,
-                    self.allocator,
-                    hdr.info,
-                    hdr.raw,
-                ) catch |err| switch (err) {
-                    error.CrcMismatch => {
+                if (self.encryption_key != null and encryption.isEncrypted(&peek_buf)) {
+                    // ── Encrypted record path ──────────────────────────────
+                    const entry = self.readEncryptedEntry(&peek_buf) catch |err| switch (err) {
+                        error.InvalidEncryptedRecord,
+                        error.DecryptionFailed,
+                        error.InvalidRecord,
+                        error.CrcMismatch,
+                        => {
+                            self.done = true;
+                            return null;
+                        },
+                        else => return err,
+                    };
+                    if (entry == null) {
                         self.done = true;
-                        return null; // treat as end-of-valid-log
-                    },
-                    else => return err, // propagate real I/O errors
-                };
-                if (maybe_payload == null) {
-                    self.done = true;
-                    return null; // torn write at payload boundary
-                }
-                const payload = maybe_payload.?;
+                        return null;
+                    }
+                    const e = entry.?;
 
-                // Skip records at or below the requested starting LSN.
-                if (hdr.info.lsn <= self.from_lsn) {
-                    self.allocator.free(payload);
-                    continue;
-                }
+                    if (e.lsn <= self.from_lsn) {
+                        self.allocator.free(e.payload);
+                        continue;
+                    }
+                    return e;
+                } else {
+                    // ── Plaintext record path ──────────────────────────────
+                    // The 12 bytes are the standard record header.
+                    const hdr_info = record.HeaderInfo{
+                        .lsn = std.mem.readInt(u64, peek_buf[0..8], .little),
+                        .payload_len = std.mem.readInt(u32, peek_buf[8..12], .little),
+                    };
 
-                return Entry{
-                    .lsn = hdr.info.lsn,
-                    .payload = payload,
-                    .allocator = self.allocator,
-                };
+                    const maybe_payload = record.readPayloadAndVerify(
+                        self.file,
+                        self.allocator,
+                        hdr_info,
+                        peek_buf,
+                    ) catch |err| switch (err) {
+                        error.CrcMismatch => {
+                            self.done = true;
+                            return null;
+                        },
+                        else => return err,
+                    };
+                    if (maybe_payload == null) {
+                        self.done = true;
+                        return null;
+                    }
+                    const payload = maybe_payload.?;
+
+                    if (hdr_info.lsn <= self.from_lsn) {
+                        self.allocator.free(payload);
+                        continue;
+                    }
+
+                    return Entry{
+                        .lsn = hdr_info.lsn,
+                        .payload = payload,
+                        .allocator = self.allocator,
+                    };
+                }
             }
+        }
+
+        /// Read a single encrypted record, given the 12-byte peek that was
+        /// already consumed from the file.
+        fn readEncryptedEntry(self: *Iterator, peek_buf: *const [12]u8) !?Entry {
+            const blob_len = std.mem.readInt(u32, peek_buf[0..4], .little);
+            const total_on_disk: usize = encryption.BLOB_LEN_SIZE + @as(usize, blob_len);
+
+            if (total_on_disk < 12) return null; // corrupt blob_len
+            const remaining = total_on_disk - 12;
+
+            // Assemble the full encrypted blob.
+            const blob_buf = try self.allocator.alloc(u8, total_on_disk);
+            defer self.allocator.free(blob_buf);
+
+            @memcpy(blob_buf[0..12], peek_buf);
+
+            if (remaining > 0) {
+                const n = try self.file.readAll(blob_buf[12..]);
+                if (n < remaining) return null; // torn write
+            }
+
+            // Decrypt the blob to get the inner plaintext record.
+            const key = &self.encryption_key.?;
+            const plaintext = try encryption.decryptRecord(self.allocator, key, blob_buf);
+            defer self.allocator.free(plaintext);
+
+            // Deserialize the inner record.
+            const rec = try record.deserialize(plaintext);
+
+            // Copy payload out — the plaintext buffer is freed on return.
+            const payload_copy = try self.allocator.dupe(u8, rec.payload);
+
+            return Entry{
+                .lsn = rec.lsn,
+                .payload = payload_copy,
+                .allocator = self.allocator,
+            };
         }
 
         /// Close the read-only file handle.
@@ -527,4 +626,166 @@ test "compact: removes records and allows continued append" {
 
     const eof = try iter.next();
     try std.testing.expect(eof == null);
+}
+
+test "encrypted: append and iterate with encryption" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
+        .encryption_key = key,
+    });
+    defer wal.deinit();
+
+    const lsn1 = try wal.append("encrypted-hello");
+    const lsn2 = try wal.append("encrypted-world");
+
+    try std.testing.expectEqual(@as(u64, 1), lsn1);
+    try std.testing.expectEqual(@as(u64, 2), lsn2);
+
+    // Iterate and verify payloads match.
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+
+    var maybe_e1 = try iter.next();
+    try std.testing.expect(maybe_e1 != null);
+    defer maybe_e1.?.deinit();
+    try std.testing.expectEqual(@as(u64, 1), maybe_e1.?.lsn);
+    try std.testing.expectEqualSlices(u8, "encrypted-hello", maybe_e1.?.payload);
+
+    var maybe_e2 = try iter.next();
+    try std.testing.expect(maybe_e2 != null);
+    defer maybe_e2.?.deinit();
+    try std.testing.expectEqual(@as(u64, 2), maybe_e2.?.lsn);
+    try std.testing.expectEqualSlices(u8, "encrypted-world", maybe_e2.?.payload);
+
+    const eof_enc = try iter.next();
+    try std.testing.expect(eof_enc == null);
+}
+
+test "encrypted: recovery after close and reopen" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    // Write records with encryption, then close.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
+            .encryption_key = key,
+        });
+        defer wal.deinit();
+        _ = try wal.append("record-1");
+        _ = try wal.append("record-2");
+        _ = try wal.append("record-3");
+        try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+    }
+
+    // Reopen with the same key — should recover LSN = 3.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
+            .encryption_key = key,
+        });
+        defer wal.deinit();
+        try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+
+        // The next append should be LSN 4.
+        const lsn = try wal.append("record-4");
+        try std.testing.expectEqual(@as(u64, 4), lsn);
+
+        // Iterate all 4 records.
+        var iter = try wal.iterator(0);
+        defer iter.deinit();
+
+        const expected = [_][]const u8{ "record-1", "record-2", "record-3", "record-4" };
+        for (expected, 1..) |expected_payload, i| {
+            var maybe_entry = try iter.next();
+            try std.testing.expect(maybe_entry != null);
+            defer maybe_entry.?.deinit();
+            try std.testing.expectEqual(@as(u64, i), maybe_entry.?.lsn);
+            try std.testing.expectEqualSlices(u8, expected_payload, maybe_entry.?.payload);
+        }
+
+        const eof_enc = try iter.next();
+        try std.testing.expect(eof_enc == null);
+    }
+}
+
+test "encrypted: appendBatch with encryption" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
+        .encryption_key = key,
+    });
+    defer wal.deinit();
+
+    const payloads = [_][]const u8{ "alpha", "beta", "gamma" };
+    const last_lsn = try wal.appendBatch(&payloads);
+
+    try std.testing.expectEqual(@as(u64, 3), last_lsn);
+    try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+
+    // Iterate and verify.
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+
+    for (payloads, 1..) |expected_payload, i| {
+        var maybe_entry = try iter.next();
+        try std.testing.expect(maybe_entry != null);
+        defer maybe_entry.?.deinit();
+        try std.testing.expectEqual(@as(u64, i), maybe_entry.?.lsn);
+        try std.testing.expectEqualSlices(u8, expected_payload, maybe_entry.?.payload);
+    }
+
+    const eof_enc = try iter.next();
+    try std.testing.expect(eof_enc == null);
+}
+
+test "encrypted: iterator from_lsn skips earlier encrypted records" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
+        .encryption_key = key,
+    });
+    defer wal.deinit();
+
+    _ = try wal.append("one");
+    _ = try wal.append("two");
+    _ = try wal.append("three");
+    _ = try wal.append("four");
+
+    // Start after LSN 2 — should see only 3 and 4.
+    var iter = try wal.iterator(2);
+    defer iter.deinit();
+
+    var maybe_e3 = try iter.next();
+    try std.testing.expect(maybe_e3 != null);
+    defer maybe_e3.?.deinit();
+    try std.testing.expectEqual(@as(u64, 3), maybe_e3.?.lsn);
+    try std.testing.expectEqualSlices(u8, "three", maybe_e3.?.payload);
+
+    var maybe_e4 = try iter.next();
+    try std.testing.expect(maybe_e4 != null);
+    defer maybe_e4.?.deinit();
+    try std.testing.expectEqual(@as(u64, 4), maybe_e4.?.lsn);
+    try std.testing.expectEqualSlices(u8, "four", maybe_e4.?.payload);
+
+    const eof_enc = try iter.next();
+    try std.testing.expect(eof_enc == null);
 }

@@ -24,6 +24,7 @@
 const std = @import("std");
 const Crc32IsoHdlc = std.hash.crc.Crc32IsoHdlc;
 const record = @import("record.zig");
+const encryption = @import("encryption.zig");
 
 // ============================================================================
 // Constants
@@ -64,7 +65,27 @@ pub const RecoveryInfo = struct {
 ///
 /// `allocator` is used only for payload reads that exceed `STACK_READ_THRESHOLD`
 /// (64 KB). For typical small payloads no heap allocation occurs.
+///
+/// This function handles **plaintext records only**.  For WAL files that may
+/// contain encrypted records, use `recoverWithKey`.
 pub fn recover(allocator: std.mem.Allocator, file: std.fs.File) !RecoveryInfo {
+    return recoverWithKey(allocator, file, null);
+}
+
+/// Scan `file` from the beginning, handling both plaintext and encrypted
+/// records.
+///
+/// When `key` is non-null, any record that begins with the encryption magic
+/// bytes is decrypted so that the inner LSN can be extracted.  If `key` is
+/// null the function behaves identically to `recover` (plaintext-only).
+///
+/// All other semantics (stopping at the first invalid record, not modifying
+/// the file, etc.) are the same as `recover`.
+pub fn recoverWithKey(
+    allocator: std.mem.Allocator,
+    file: std.fs.File,
+    key: ?*const [32]u8,
+) !RecoveryInfo {
     // Seek to the beginning of the file before scanning.
     try file.seekTo(0);
 
@@ -75,50 +96,89 @@ pub fn recover(allocator: std.mem.Allocator, file: std.fs.File) !RecoveryInfo {
     };
 
     while (true) {
-        // ── Step 1: read the 12-byte header ─────────────────────────────────
-        var header_buf: [record.HEADER_SIZE]u8 = undefined;
-        const header_n = try file.readAll(&header_buf);
-        if (header_n < record.HEADER_SIZE) {
-            // EOF or torn write of the header itself — stop scanning.
+        // ── Peek: detect encrypted vs plaintext ──────────────────────────────
+        // Read the first 12 bytes to decide which parsing path to take.
+        // For encrypted records bytes [4..12] contain the MAGIC.
+        // For plaintext records this is the standard header.
+        var peek_buf: [12]u8 = undefined;
+        const peek_n = try file.readAll(&peek_buf);
+        if (peek_n < 12) {
+            // EOF or torn write — stop scanning.
             break;
         }
 
-        const lsn = std.mem.readInt(u64, header_buf[0..8], .little);
-        const payload_len = std.mem.readInt(u32, header_buf[8..12], .little);
-        const tail_len = @as(usize, payload_len) + record.CRC_SIZE;
+        if (key != null and encryption.isEncrypted(&peek_buf)) {
+            // ── Encrypted record path ───────────────────────────────────────
+            // The first 4 bytes we just read are blob_len (u32 LE).
+            const blob_len = std.mem.readInt(u32, peek_buf[0..4], .little);
+            const total_on_disk = @as(u64, encryption.BLOB_LEN_SIZE) + @as(u64, blob_len);
 
-        // ── Step 2: read payload + CRC footer ────────────────────────────────
-        //
-        // We only need the bytes to verify the CRC; we do NOT need to return
-        // an owned copy. Use a stack buffer for payloads ≤ 64 KB; fall back
-        // to heap for larger payloads.
-        if (tail_len <= STACK_READ_THRESHOLD + record.CRC_SIZE) {
-            // Stack path: allocate the maximum possible tail on the stack.
-            var stack_buf: [STACK_READ_THRESHOLD + record.CRC_SIZE]u8 = undefined;
-            const tail = stack_buf[0..tail_len];
+            // We already consumed 12 bytes of the blob via peek; the remaining
+            // bytes are (total_on_disk - 12).
+            if (total_on_disk < 12) break; // corrupt blob_len
+            const remaining = total_on_disk - 12;
 
-            const n = try file.readAll(tail);
-            if (n < tail_len) break; // torn write — stop scanning
+            // Allocate a contiguous buffer for the full encrypted blob.
+            const blob_buf = try allocator.alloc(u8, @intCast(total_on_disk));
+            defer allocator.free(blob_buf);
 
-            if (!verifyCrc(header_buf, tail[0..payload_len], tail[payload_len..])) break;
+            // Copy the 12 bytes we already read into the front.
+            @memcpy(blob_buf[0..12], &peek_buf);
+
+            // Read the rest from disk.
+            if (remaining > 0) {
+                const rest_n = try file.readAll(blob_buf[12..]);
+                if (rest_n < @as(usize, @intCast(remaining))) break; // torn write
+            }
+
+            // Decrypt to get the inner plaintext record bytes.
+            const plaintext = encryption.decryptRecord(allocator, key.?, blob_buf) catch {
+                break; // decryption failure — treat as end-of-valid-log
+            };
+            defer allocator.free(plaintext);
+
+            // Deserialize the inner record to extract the LSN and verify CRC.
+            const rec = record.deserialize(plaintext) catch {
+                break; // inner record corrupt
+            };
+
+            // ── Valid encrypted record — update scan state ─────────────────
+            info.last_lsn = rec.lsn;
+            info.record_count += 1;
+            info.valid_end += total_on_disk;
         } else {
-            // Heap path: payload exceeds 64 KB.
-            const heap_buf = try allocator.alloc(u8, tail_len);
-            defer allocator.free(heap_buf);
+            // ── Plaintext record path (unchanged logic) ─────────────────────
+            // The 12 bytes we just read are the standard header.
+            const header_buf: [record.HEADER_SIZE]u8 = peek_buf;
 
-            const n = try file.readAll(heap_buf);
-            if (n < tail_len) break; // torn write — stop scanning
+            const lsn = std.mem.readInt(u64, header_buf[0..8], .little);
+            const payload_len = std.mem.readInt(u32, header_buf[8..12], .little);
+            const tail_len = @as(usize, payload_len) + record.CRC_SIZE;
 
-            const payload_slice = heap_buf[0..payload_len];
-            const crc_slice = heap_buf[payload_len..];
-            if (!verifyCrc(header_buf, payload_slice, crc_slice)) break;
+            if (tail_len <= STACK_READ_THRESHOLD + record.CRC_SIZE) {
+                var stack_buf: [STACK_READ_THRESHOLD + record.CRC_SIZE]u8 = undefined;
+                const tail = stack_buf[0..tail_len];
+
+                const n = try file.readAll(tail);
+                if (n < tail_len) break;
+
+                if (!verifyCrc(header_buf, tail[0..payload_len], tail[payload_len..])) break;
+            } else {
+                const heap_buf = try allocator.alloc(u8, tail_len);
+                defer allocator.free(heap_buf);
+
+                const n = try file.readAll(heap_buf);
+                if (n < tail_len) break;
+
+                const payload_slice = heap_buf[0..payload_len];
+                const crc_slice = heap_buf[payload_len..];
+                if (!verifyCrc(header_buf, payload_slice, crc_slice)) break;
+            }
+
+            info.last_lsn = lsn;
+            info.record_count += 1;
+            info.valid_end += @as(u64, record.HEADER_SIZE) + @as(u64, payload_len) + @as(u64, record.CRC_SIZE);
         }
-
-        // ── Step 3: record is valid — update scan state ──────────────────────
-        info.last_lsn = lsn;
-        info.record_count += 1;
-        // valid_end is the file offset immediately after this record.
-        info.valid_end += @as(u64, record.HEADER_SIZE) + @as(u64, payload_len) + @as(u64, record.CRC_SIZE);
     }
 
     return info;
