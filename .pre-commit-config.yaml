@@ -1,0 +1,98 @@
+---
+# Pre-commit configuration
+# https://pre-commit.com/
+
+default_stages: [pre-commit]
+fail_fast: false
+
+repos:
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^\.gitlab/
+      - id: end-of-file-fixer
+        exclude: ^\.gitlab/
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-yaml
+        args: [--unsafe]
+      - id: check-json
+      - id: check-toml
+      - id: check-xml
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-merge-conflict
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: detect-private-key
+
+  # Shell linting
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: [--severity=error]
+
+  # Markdown linting
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.43.0
+    hooks:
+      - id: markdownlint
+        args: [--config, .markdownlint.json]
+        exclude: ^CHANGELOG\.md$
+
+  # YAML formatting
+  - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
+    rev: v2.14.0
+    hooks:
+      - id: pretty-format-yaml
+        args: [--autofix, --indent, "2"]
+        exclude: ^\.gitlab-ci\.yml$
+
+  # Conventional commits
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.1.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+  # Local Zig hooks
+  - repo: local
+    hooks:
+      - id: zig-fmt
+        name: zig fmt (check)
+        entry: zig fmt --check
+        language: system
+        files: \.zig$
+        pass_filenames: false
+        args: [src/, tests/, build.zig]
+
+      - id: zig-build
+        name: zig build (check)
+        entry: zig build check
+        language: system
+        pass_filenames: false
+        files: \.zig$
+
+      - id: zig-test
+        name: zig test
+        entry: zig build test
+        language: system
+        pass_filenames: false
+        files: \.zig$
+        stages: [pre-push]
+
+      - id: check-todos
+        name: check TODOs
+        entry: bash -c 'if grep -rn "TODO\|FIXME\|HACK\|XXX" src/ tests/ --include="*.zig" 2>/dev/null; then echo "Warning: Found TODO/FIXME markers"; fi; exit 0'
+        language: system
+        pass_filenames: false
+        verbose: true
+
+ci:
+  autofix_prs: true
+  autofix_commit_msg: "[pre-commit.ci] auto fixes"
+  autoupdate_schedule: weekly
+  skip: [zig-fmt, zig-build, zig-test]

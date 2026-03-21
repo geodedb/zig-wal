@@ -1,0 +1,99 @@
+---
+# GitLab CI/CD Pipeline for wal
+# SPDX-License-Identifier: Apache-2.0
+
+include:
+  # Security scanning
+  - component: gitlab.com/devnw/ci-catalog/security-sast@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/security-dependency-scanning@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/security-secrets@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/security-gitleaks@v1.7.1
+
+  # Code quality
+  - component: gitlab.com/devnw/ci-catalog/zig-format@v1.2.1
+
+  # SBOM
+  - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.7.1
+  - component: gitlab.com/devnw/ci-catalog/sbom-scan@v1.7.1
+
+  # Release
+  - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.7.1
+
+variables:
+  ZIG_VERSION: "0.15.1"
+
+stages:
+  - lint
+  - build
+  - test
+  - security
+  - sbom
+  - release
+
+# Zig installation template
+.install-zig: &install-zig
+  - apt-get update && apt-get install -y curl xz-utils
+  - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+  - tar -xf zig.tar.xz
+  - export PATH="$PWD/zig-linux-x86_64-${ZIG_VERSION}:$PATH"
+  - zig version
+
+# Build job
+build:
+  stage: build
+  image: debian:bookworm-slim
+  before_script:
+    - *install-zig
+  script:
+    - zig build
+  artifacts:
+    paths:
+      - zig-out/
+    expire_in: 1 hour
+
+# Unit tests
+test:
+  stage: test
+  image: debian:bookworm-slim
+  before_script:
+    - *install-zig
+  script:
+    - zig build test --summary all
+  needs:
+    - build
+
+# Integration tests
+test-integration:
+  stage: test
+  image: debian:bookworm-slim
+  before_script:
+    - *install-zig
+  script:
+    - zig build test-integration --summary all
+  needs:
+    - build
+
+# Release optimization tests
+test-release-safe:
+  stage: test
+  image: debian:bookworm-slim
+  before_script:
+    - *install-zig
+  script:
+    - zig build test -Doptimize=ReleaseSafe --summary all
+  needs:
+    - build
+
+# Cross-compilation tests
+test-cross-build:
+  stage: test
+  image: debian:bookworm-slim
+  before_script:
+    - *install-zig
+  script:
+    - zig build -Dtarget=x86_64-linux
+    - zig build -Dtarget=aarch64-linux
+    - zig build -Dtarget=x86_64-macos
+    - zig build -Dtarget=aarch64-macos
+  needs:
+    - build
