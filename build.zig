@@ -41,6 +41,27 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(integration_tests);
     integration_step.dependOn(&run_integration_tests.step);
 
+    // Scenario tests
+    const scenario_files = [_][]const u8{
+        "tests/scenarios/crash.zig",
+        "tests/scenarios/compaction.zig",
+        "tests/scenarios/encryption.zig",
+    };
+    for (scenario_files) |scenario_path| {
+        const scenario_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(scenario_path),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "wal", .module = module },
+                },
+            }),
+        });
+        const run_scenario = b.addRunArtifact(scenario_tests);
+        integration_step.dependOn(&run_scenario.step);
+    }
+
     // Check step for IDE integration (fast syntax validation)
     const check_step = b.step("check", "Check for compilation errors");
     const check = b.addTest(.{
