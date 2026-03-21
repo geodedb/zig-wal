@@ -32,9 +32,11 @@ pub const version = "0.1.0";
 
 // Re-export submodules here as the library grows:
 pub const atomic = @import("atomic.zig");
+pub const compaction = @import("compaction.zig");
 pub const encryption = @import("encryption.zig");
 pub const record = @import("record.zig");
 pub const recovery = @import("recovery.zig");
+pub const wal = @import("wal.zig");
 
 // ============================================================================
 // Public Types
