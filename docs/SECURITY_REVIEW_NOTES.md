@@ -812,7 +812,7 @@ See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table.
 - 40 resolved and closed (SEC-0038, SEC-0039, SEC-0040 closed in this review)
 - 0 Critical or High severity findings in any review
 - 8 automated scanning tools report zero application-level findings
-- 79 unit tests + 25 integration/scenario tests + 4 fuzz tests pass at all 4 optimization levels
+- 99 unit tests + 25 integration/scenario tests + 4 fuzz tests pass at all 4 optimization levels
 - Zero external dependencies
 
 See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table.
@@ -891,7 +891,7 @@ See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table.
 - 0 open findings
 - 0 Critical or High severity findings in any review
 - 8 automated scanning tools report zero application-level findings across all 12 reviews
-- 79 unit tests + 25 integration/scenario tests + 4 fuzz tests pass at all 4 optimization levels (108 total)
+- 99 unit tests + 25 integration/scenario tests + 4 fuzz tests pass at all 4 optimization levels (128 total)
 - Zero external dependencies
 
 See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table.
@@ -954,8 +954,66 @@ See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table.
 - 0 open findings
 - 0 Critical or High severity findings in any review
 - 7 automated scanning tools report zero application-level findings across all 13 reviews
-- 79 unit tests + 25 integration/scenario tests + 4 fuzz tests pass at all 4 optimization levels (108 total)
+- 99 unit tests + 25 integration/scenario tests + 4 fuzz tests pass at all 4 optimization levels (128 total)
 - Zero external dependencies
 - Two consecutive zero-finding reviews (Reviews 12 and 13) confirm convergence
 
 See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table.
+
+---
+
+## Review 14
+
+> **Date:** 2026-03-22
+> **Reviewer:** Deep adversarial security code-review agent (Phase 3)
+> **Scope:** Full codebase, CI/CD pipeline, runtime assumptions
+> **Baseline:** Post-remediation of Reviews 1-13 (40 closed, 0 open new findings)
+
+### Methodology
+
+1. **Deep adversarial review** -- Focused on cryptographic key material lifecycle, TOCTOU
+   race conditions, input validation boundaries, plaintext residue in reuse buffers, and
+   filesystem durability semantics
+2. **Scoring** -- Impact (1-5) x Likelihood (1-5) x 4 = Score (max 100)
+
+### Finding Summary
+
+| Severity | Count | Notes |
+|----------|-------|-------|
+| Critical | 0 | -- |
+| High | 0 | -- |
+| Medium | 0 | 1 re-identified as SEC-0011 |
+| Low | 0 | 6 re-identified, all already tracked |
+| Info | 0 | 2 re-identified, all already tracked |
+| **Total** | **0 new** | |
+
+### Finding Mapping
+
+| Phase 3 ID | Severity | Finding | Existing SEC | Status |
+|-------------|----------|---------|--------------|--------|
+| F-1 | Medium | TOCTOU in temp file creation | SEC-0011 | Closed (no fix in Zig std) |
+| F-2 | Low | No directory fsync after rename | SEC-0020 | Closed |
+| C-1 | Low | Key persists in Options struct on caller stack | SEC-0026 | Closed |
+| C-3 | Low | loadKeyFromEnv doesn't clear env var | SEC-0018 | Closed |
+| F-4 | Low | Predictable temp file name | SEC-0005 | Closed |
+| I-2 | Low | 16 MiB MAX_RECORD_SIZE allocation | SEC-0004 | Closed |
+| I-3 | Low | No MAX_RECORD_SIZE on write path | SEC-0004 | Closed (by design) |
+| C-2 | Info | No nonce counter enforcement | SEC-0007 | Closed |
+| M-2 | Info | Reuse buffer tail not fully zeroized | SEC-0009/SEC-0029 | Closed |
+
+### Won't Do Confirmation -- Review 14
+
+SEC-0014 (CI cache key cross-branch poisoning) and SEC-0016 (check-yaml `--unsafe` flag)
+confirmed correctly scoped out. No change to Won't Do policy.
+
+### Cumulative Status (Post-Review 14)
+
+- 40 total findings across 14 reviews (SEC-0001 through SEC-0040)
+- 40 resolved and closed
+- 0 new findings
+- 0 Critical or High severity findings in any review
+- Three consecutive zero-new-finding reviews (Reviews 12, 13, 14) confirm convergence
+- 99 unit tests + 25 integration/scenario tests + 4 fuzz tests pass at all 4 optimization levels (128 total)
+- Zero external dependencies
+
+See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table and issue links.

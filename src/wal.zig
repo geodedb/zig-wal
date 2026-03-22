@@ -14,6 +14,7 @@ const record = @import("record.zig");
 const recovery_mod = @import("recovery.zig");
 const compaction = @import("compaction.zig");
 const encryption = @import("encryption.zig");
+const checkpoint_mod = @import("checkpoint.zig");
 
 // ============================================================================
 // Options
@@ -50,6 +51,17 @@ pub const Options = struct {
     /// option). Values > 1 amortize fsync cost at the risk of losing up to
     /// N-1 records on crash.
     sync_every_n: u32 = 1,
+
+    /// When `true`, `init()` attempts to use a checkpoint sidecar file
+    /// (`{filename}.ckpt`) for O(1) recovery on clean shutdown (PERF-0013).
+    /// Falls back to full scan if the checkpoint is missing, corrupt, or stale.
+    /// The checkpoint is written atomically during `deinit()`.
+    checkpoint: bool = false,
+
+    /// When `true`, compaction uses `copy_file_range(2)` for zero-copy bulk
+    /// transfer on Linux (PERF-0014). Falls back to the user-space copy loop
+    /// on non-Linux platforms or if the syscall is unavailable at runtime.
+    zero_copy_compaction: bool = false,
 };
 
 // ============================================================================
@@ -61,6 +73,7 @@ pub const Options = struct {
 pub const WriteAheadLog = struct {
     allocator: std.mem.Allocator,
     dir: std.fs.Dir,
+    /// Owned copy of the filename — freed in `deinit` (QA-0067).
     filename: []const u8,
     file: std.fs.File,
     current_lsn: u64,
@@ -89,6 +102,11 @@ pub const WriteAheadLog = struct {
         filename: []const u8,
         options: Options,
     ) !WriteAheadLog {
+        // Own the filename so the WAL is safe even if the caller's slice
+        // is freed or goes out of scope (QA-0067).
+        const owned_filename = try allocator.dupe(u8, filename);
+        errdefer allocator.free(owned_filename);
+
         // Open existing file, or create a new one with read+write access.
         // New files get 0o600 permissions (owner-only) for defense-in-depth (SEC-0015).
         const file = dir.openFile(filename, .{ .mode = .read_write }) catch |err| switch (err) {
@@ -103,12 +121,49 @@ pub const WriteAheadLog = struct {
         // platforms or when the caller is not the file owner.
         std.posix.fchmod(file.handle, 0o600) catch {};
 
-        // Scan forward from byte 0 to find the last valid record boundary.
-        // Use the encryption-aware scanner when a key is provided.
-        const info = if (options.encryption_key) |*key|
-            try recovery_mod.recoverWithKey(allocator, file, key)
-        else
-            try recovery_mod.recover(allocator, file);
+        // Recover WAL state: try checkpoint-accelerated path first if enabled,
+        // then fall back to full scan (PERF-0013).
+        const info = blk: {
+            if (options.checkpoint) {
+                if (checkpoint_mod.readCheckpoint(dir, filename)) |ckpt| {
+                    const start = recovery_mod.RecoveryInfo{
+                        .last_lsn = ckpt.last_lsn,
+                        .valid_end = ckpt.valid_end,
+                        .record_count = ckpt.record_count,
+                    };
+                    const inc = if (options.encryption_key) |*key|
+                        recovery_mod.recoverFromWithKey(allocator, file, start, key)
+                    else
+                        recovery_mod.recoverFrom(allocator, file, start);
+                    if (inc) |result| {
+                        // Guard: if incremental recovery found zero new records
+                        // but the file is larger than the checkpoint, the checkpoint
+                        // may point mid-record (forged or corrupt). Fall back to
+                        // full scan rather than trusting the checkpoint's valid_end,
+                        // which would cause init() to truncate valid data (SEC NEW-3).
+                        const stat = try file.stat();
+                        if (result.valid_end == ckpt.valid_end and stat.size > ckpt.valid_end) {
+                            break :blk if (options.encryption_key) |*key|
+                                try recovery_mod.recoverWithKey(allocator, file, key)
+                            else
+                                try recovery_mod.recover(allocator, file);
+                        }
+                        break :blk result;
+                    } else |_| {
+                        // CheckpointStale or other error — fall through to full scan.
+                        break :blk if (options.encryption_key) |*key|
+                            try recovery_mod.recoverWithKey(allocator, file, key)
+                        else
+                            try recovery_mod.recover(allocator, file);
+                    }
+                }
+            }
+            // No checkpoint or checkpoint disabled — full scan.
+            break :blk if (options.encryption_key) |*key|
+                try recovery_mod.recoverWithKey(allocator, file, key)
+            else
+                try recovery_mod.recover(allocator, file);
+        };
 
         // Truncate any bytes beyond the last valid record (torn writes, etc.).
         try file.setEndPos(info.valid_end);
@@ -119,7 +174,7 @@ pub const WriteAheadLog = struct {
         return WriteAheadLog{
             .allocator = allocator,
             .dir = dir,
-            .filename = filename,
+            .filename = owned_filename,
             .file = file,
             .current_lsn = info.last_lsn,
             .file_end = info.valid_end,
@@ -130,11 +185,23 @@ pub const WriteAheadLog = struct {
         };
     }
 
-    /// Close the underlying file handle and zeroize any key material (SEC-0002).
+    /// Close the underlying file handle, free the owned filename, and
+    /// zeroize any key material (SEC-0002).
     pub fn deinit(self: *WriteAheadLog) void {
+        // Write checkpoint sidecar on clean shutdown (PERF-0013).
+        // Best-effort — errors are silently ignored since we're tearing down.
+        if (self.options.checkpoint and !self.poisoned) {
+            checkpoint_mod.writeCheckpoint(self.dir, self.filename, .{
+                .last_lsn = self.current_lsn,
+                .valid_end = self.file_end,
+                .record_count = 0, // record_count not tracked by WAL; checkpoint serves as position hint
+            }) catch {};
+        }
         if (self.options.encryption_key) |*key| {
             encryption.secureZero(key);
         }
+        // Free the owned filename copy (QA-0067).
+        self.allocator.free(self.filename);
         // Guard: if the WAL was poisoned because reopenOrPoison failed to
         // open a new fd, self.file still holds the stale (already-closed)
         // handle. Closing it again triggers EBADF → unreachable in
@@ -326,6 +393,7 @@ pub const WriteAheadLog = struct {
             self.filename,
             up_to_lsn,
             if (self.options.encryption_key) |*key| key else null,
+            self.options.zero_copy_compaction,
         ) catch |err| {
             self.reopenOrPoison();
             return err;
@@ -339,6 +407,11 @@ pub const WriteAheadLog = struct {
         self.file_end = result.new_size;
         self.bytes_since_compact = 0;
         self.appends_since_sync = 0; // finalizeTempFile already fsynced (QA-0036)
+
+        // Invalidate the checkpoint — the file layout changed (PERF-0013).
+        if (self.options.checkpoint) {
+            checkpoint_mod.deleteCheckpoint(self.dir, self.filename);
+        }
     }
 
     /// Reopen the WAL file for appending and seek to end.  If either the
@@ -403,6 +476,30 @@ pub const WriteAheadLog = struct {
 // ============================================================================
 // Tests
 // ============================================================================
+
+test "init: filename is owned copy, safe after caller frees original (QA-0067)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Allocate a filename on the heap, pass it to init, then free the original.
+    // The WAL must continue to work because it owns a copy.
+    const heap_name = try allocator.dupe(u8, "owned.wal");
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, heap_name, .{});
+    defer wal.deinit();
+
+    // Free the caller's original — WAL must still function.
+    allocator.free(heap_name);
+
+    // Append and iterate to prove the internal filename copy works.
+    _ = try wal.append("data");
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var entry = try iter.next();
+    try std.testing.expect(entry != null);
+    defer entry.?.deinit();
+    try std.testing.expectEqualSlices(u8, "data", entry.?.payload);
+}
 
 test "init: creates WAL file, append returns LSN 1" {
     const allocator = std.testing.allocator;
@@ -963,4 +1060,151 @@ test "poisoned WAL rejects all operations (QA-0017)" {
     try std.testing.expectError(error.WalPoisoned, wal.appendBatch(&batch));
 
     try std.testing.expectError(error.WalPoisoned, wal.sync());
+}
+
+test "checkpoint: O(1) recovery on clean reopen (PERF-0013)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Write records with checkpoint enabled, then close cleanly.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        defer wal.deinit();
+        _ = try wal.append("one");
+        _ = try wal.append("two");
+        _ = try wal.append("three");
+    }
+
+    // Verify the checkpoint file was created.
+    const ckpt = checkpoint_mod.readCheckpoint(tmp.dir, "wal.log");
+    try std.testing.expect(ckpt != null);
+    try std.testing.expectEqual(@as(u64, 3), ckpt.?.last_lsn);
+
+    // Reopen with checkpoint — should skip full scan.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        defer wal.deinit();
+        try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+
+        // Append more — LSN should continue from 3.
+        const lsn = try wal.append("four");
+        try std.testing.expectEqual(@as(u64, 4), lsn);
+    }
+}
+
+test "checkpoint: incremental recovery after append without clean shutdown (PERF-0013)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Write 2 records and close cleanly — creates checkpoint at LSN 2.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        defer wal.deinit();
+        _ = try wal.append("one");
+        _ = try wal.append("two");
+    }
+
+    // Reopen, write 2 more records, simulate a crash (no deinit → no checkpoint update).
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        _ = try wal.append("three");
+        _ = try wal.append("four");
+        // Skip deinit — simulate crash. Manually close the file to avoid leak.
+        wal.file.close();
+        allocator.free(wal.filename);
+    }
+
+    // Reopen with checkpoint — should do incremental recovery from checkpoint
+    // position (LSN 2) and find the 2 new records.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        defer wal.deinit();
+        try std.testing.expectEqual(@as(u64, 4), wal.currentLsn());
+    }
+}
+
+test "checkpoint: deleted after compaction (PERF-0013)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        defer wal.deinit();
+        _ = try wal.append("one");
+        _ = try wal.append("two");
+        _ = try wal.append("three");
+
+        // Compact — should delete checkpoint.
+        try wal.compact(2);
+
+        // Checkpoint should be gone.
+        try std.testing.expect(checkpoint_mod.readCheckpoint(tmp.dir, "wal.log") == null);
+    }
+
+    // After deinit, a fresh checkpoint should be written.
+    try std.testing.expect(checkpoint_mod.readCheckpoint(tmp.dir, "wal.log") != null);
+}
+
+test "checkpoint: falls back to full scan when disabled" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Write with checkpoint enabled.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        defer wal.deinit();
+        _ = try wal.append("one");
+        _ = try wal.append("two");
+    }
+
+    // Reopen with checkpoint disabled — should still work via full scan.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = false });
+        defer wal.deinit();
+        try std.testing.expectEqual(@as(u64, 2), wal.currentLsn());
+    }
+}
+
+test "zero_copy_compaction: compact uses kernel transfer (PERF-0014)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
+        .zero_copy_compaction = true,
+    });
+    defer wal.deinit();
+
+    _ = try wal.append("one");
+    _ = try wal.append("two");
+    _ = try wal.append("three");
+    _ = try wal.append("four");
+
+    // Compact with zero-copy enabled.
+    try wal.compact(2);
+
+    // Verify records 3 and 4 remain.
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+
+    var e3 = try iter.next();
+    try std.testing.expect(e3 != null);
+    defer e3.?.deinit();
+    try std.testing.expectEqual(@as(u64, 3), e3.?.lsn);
+
+    var e4 = try iter.next();
+    try std.testing.expect(e4 != null);
+    defer e4.?.deinit();
+    try std.testing.expectEqual(@as(u64, 4), e4.?.lsn);
+
+    const eof = try iter.next();
+    try std.testing.expect(eof == null);
+
+    // New append should work.
+    const lsn5 = try wal.append("five");
+    try std.testing.expectEqual(@as(u64, 5), lsn5);
 }

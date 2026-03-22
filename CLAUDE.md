@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 zig build                # Build library
-zig build test           # Unit tests (79 tests across 8 modules)
+zig build test           # Unit tests (99 tests across 9 modules)
 zig build test-integration  # Integration + scenario tests (25 tests)
 zig build check          # Fast syntax check (no codegen, good for IDE)
 
@@ -33,9 +33,10 @@ root.zig (public API re-exports)
   └── wal.zig (WriteAheadLog struct — orchestrator)
         ├── record.zig (serialize/deserialize, CRC32, verifyCrc, file I/O)
         ├── iterator.zig (forward Iterator over WAL records)
-        ├── recovery.zig (forward scan, CRC validation, truncation)
-        ├── compaction.zig (bulk-copy above LSN watermark)
+        ├── recovery.zig (forward scan, CRC validation, truncation, incremental recovery)
+        ├── compaction.zig (bulk-copy above LSN watermark, zero-copy on Linux)
         ├── encryption.zig (AES-256-GCM per-record encrypt/decrypt, readEncryptedBlob)
+        ├── checkpoint.zig (recovery checkpoint sidecar for O(1) startup)
         └── atomic.zig (temp+fsync+rename file writes)
 ```
 

@@ -110,7 +110,7 @@ var log2 = try wal.WriteAheadLog.init(allocator, dir, "my.wal", .{
 try log2.sync(); // explicit sync
 ```
 
-`appendBatch()` always syncs once at the end, regardless of `sync_every_n`.
+`appendBatch()` respects `sync_every_n` and `manual_sync` the same way `append()` does — it accumulates the batch count and syncs only when the threshold is reached (SEC-0028).
 
 ## Crash Recovery
 
@@ -126,6 +126,38 @@ Recovery runs **automatically** during `init()` — no user action is needed.
 
 After `init()` returns, the WAL is guaranteed to contain only fully-written,
 integrity-verified records.
+
+### Recovery Checkpoint (PERF-0013)
+
+Enable `Options.checkpoint = true` for O(1) startup on clean shutdown:
+
+```zig
+var wal = try WriteAheadLog.init(allocator, dir, "my.wal", .{
+    .checkpoint = true,
+});
+```
+
+On clean `deinit()`, a 28-byte `.ckpt` sidecar file is written atomically.
+On the next `init()`:
+- If the checkpoint matches the file size exactly: **O(1) skip** (no scan).
+- If the file grew (records appended after checkpoint): **incremental scan** from the checkpoint position.
+- If the checkpoint is missing, corrupt, or stale: **full scan** fallback.
+
+The checkpoint is deleted automatically after compaction.
+
+### Zero-Copy Compaction (PERF-0014)
+
+Enable `Options.zero_copy_compaction = true` for kernel-level data transfer during compaction on Linux:
+
+```zig
+var wal = try WriteAheadLog.init(allocator, dir, "my.wal", .{
+    .zero_copy_compaction = true,
+});
+```
+
+Uses `copy_file_range(2)` to transfer data entirely in kernel space, avoiding
+user-space buffer copies. Falls back automatically to the standard 256 KiB
+buffer loop on non-Linux platforms or unsupported filesystem combinations.
 
 ## Key Management
 

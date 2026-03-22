@@ -57,4 +57,5 @@ test {
     _ = @import("compaction.zig");
     _ = @import("encryption.zig");
     _ = @import("atomic.zig");
+    _ = @import("checkpoint.zig");
 }

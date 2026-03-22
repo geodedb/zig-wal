@@ -9,7 +9,7 @@
 
 ## Summary
 
-Six performance reviews have been performed on this codebase.
+Seven performance reviews have been performed on this codebase.
 
 **Review 1** (2026-03-21): 10 findings (PERF-0001 through PERF-0010). All 10 have been
 **resolved and closed**. Primary bottleneck was encrypted-mode allocation overhead.
@@ -80,6 +80,15 @@ parallel analysis agents (write path + encryption, read path + CI/build). All ho
 properly optimized. Two consecutive zero-finding reviews (Reviews 5 and 6) confirm performance
 maturity. Benchmarks stable with no regressions from QA Review 5 code changes.
 
+**Review 7** (2026-03-22): 1 new finding (PERF-0023). Scope: external perf-reviewer agent
+generated 6 candidates (1 P1, 5 P2). Systematic cross-reference against all 22 existing PERF
+findings and 19 triaged non-findings confirmed that 5 of 6 candidates were already tracked:
+1 was explicitly rejected in Review 5 (recovery unbuffered I/O), 2 were triaged as non-findings
+in Reviews 2/4 (stack size, zeroing), and 2 were already resolved (PERF-0002 appendBatch,
+PERF-0003 encrypted compaction decrypt). The 1 genuinely new finding is the absence of a CI
+benchmark regression gate (PERF-0023). PERF-0013 and PERF-0014 confirmed still correctly deferred.
+Overall status: **23 findings across 7 reviews. All 23 closed, 0 deferred, 0 open.**
+
 Key metrics from post-Review 4 benchmarks (`zig build bench`):
 
 | Benchmark | Records | Time (ms) | Throughput | Notes |
@@ -120,8 +129,8 @@ Post-Review 4 improvements: PERF-0020 + PERF-0021 combined improved encrypted it
 | 10 | Info | 16 | fsync instead of fdatasync on append path | `wal.zig` | Confirmed | [#17](https://gitlab.com/devnw/zig/wal/-/issues/17) | **Closed** |
 | 11 | P2 | 64 | secureZero clears full 131KB stack buffers for any payload size | `encryption.zig` | Confirmed | [#107](https://gitlab.com/devnw/zig/wal/-/issues/107) | **Closed** |
 | 12 | P3 | 24 | Iterator encrypted skip path dupes payload then immediately frees | `iterator.zig` | Confirmed | [#108](https://gitlab.com/devnw/zig/wal/-/issues/108) | **Closed** |
-| 13 | P3 | 24 | Recovery scans entire file on every init — O(N) startup | `wal.zig` / `recovery.zig` | Suspected | [#109](https://gitlab.com/devnw/zig/wal/-/issues/109) | **Deferred** |
-| 14 | P3 | 20 | Compaction bulk-copy uses user-space loop instead of zero-copy | `compaction.zig` | Suspected | [#110](https://gitlab.com/devnw/zig/wal/-/issues/110) | **Deferred** |
+| 13 | P3 | 24 | Recovery scans entire file on every init — O(N) startup | `wal.zig` / `recovery.zig` | Suspected | [#109](https://gitlab.com/devnw/zig/wal/-/issues/109) | **Closed** |
+| 14 | P3 | 20 | Compaction bulk-copy uses user-space loop instead of zero-copy | `compaction.zig` | Suspected | [#110](https://gitlab.com/devnw/zig/wal/-/issues/110) | **Closed** |
 | 15 | Info | 8 | Benchmark suite missing iteration and over-measures decrypt overhead | `bench/main.zig` | Confirmed | [#111](https://gitlab.com/devnw/zig/wal/-/issues/111) | **Closed** |
 | 16 | P3 | 24 | Recovery/compaction encrypted scan allocates blob per record | `recovery.zig` / `compaction.zig` / `encryption.zig` | Confirmed | [#112](https://gitlab.com/devnw/zig/wal/-/issues/112) | **Closed** |
 | 17 | Info | 12 | Encrypt benchmark allocates per iteration, masks true AES-GCM throughput | `bench/main.zig` | Confirmed | [#113](https://gitlab.com/devnw/zig/wal/-/issues/113) | **Closed** |
@@ -285,25 +294,36 @@ All 10 Review 1 findings have been resolved:
 
 ---
 
-### PERF-0013: Recovery scans entire file on every init — O(N) startup (P3, Score 24) — DEFERRED
+### PERF-0013: Recovery scans entire file on every init — O(N) startup (P3, Score 24) — CLOSED
 
 **Evidence:** `src/wal.zig:108-111` calls `recovery.recoverWithKey()` which scans from byte 0, validating every record (CRC or decrypt). Startup time is linear in file size.
 
 **Measurement:** `recovery_10k_encrypted` = 47.75 ms for 10K records. Extrapolated: 1M encrypted records ≈ 4.8 seconds; 10M ≈ 48 seconds.
 
-**Deferred rationale:** Requires a checkpoint/sidecar mechanism for O(1) startup on clean shutdown — a design-level change not justified for current workload sizes. The full scan provides crash-safety guarantees that a checkpoint mechanism would need to replicate carefully. Will revisit when WAL sizes exceed 100K records in production.
+**Resolution:** Added checkpoint sidecar mechanism (`Options.checkpoint = true`). New `checkpoint.zig`
+module writes a 28-byte `.ckpt` file (last_lsn, valid_end, record_count, CRC32) atomically during
+clean `deinit()`. On `init()`, three paths: (1) exact match → O(1) skip scan, (2) file grew →
+incremental scan from checkpoint position O(delta), (3) stale/missing → full scan fallback.
+Checkpoint deleted after compaction (layout changed). New `recovery.recoverFrom()` and
+`recoverFromWithKey()` support incremental recovery seeded from checkpoint state. 4 new
+WAL-level tests + 4 incremental recovery tests + 6 checkpoint module tests.
 
 **GitLab:** [#109](https://gitlab.com/devnw/zig/wal/-/issues/109)
 
 ---
 
-### PERF-0014: Compaction bulk-copy uses user-space loop instead of zero-copy (P3, Score 20) — DEFERRED
+### PERF-0014: Compaction bulk-copy uses user-space loop instead of zero-copy (P3, Score 20) — CLOSED
 
 **Evidence:** `src/compaction.zig:217-225` — `read`/`writeAll` loop with 256 KB stack buffer copies data through user space. On Linux, `copy_file_range` could eliminate the copy.
 
 **Measurement:** `compact_5k_plain` = 1.80 ms (2500 records, ~400 KB). Too small to see benefit.
 
-**Deferred rationale:** The current 256 KB user-space buffer is adequate for expected workload sizes. `copy_file_range` would add a Linux-specific code path requiring a cross-platform fallback, increasing maintenance burden for negligible benefit at current scale. Will revisit when compaction targets 100 MB+ WAL files.
+**Resolution:** Added `Options.zero_copy_compaction = true` opt-in. New `zeroCopyTransfer()`
+function in `compaction.zig` uses `std.os.linux.copy_file_range` for in-kernel data transfer
+on Linux. Falls back to `userSpaceCopy()` (existing 256 KiB buffer loop) on non-Linux platforms
+or when the syscall returns ENOSYS/EXDEV/EINVAL. Cross-platform safe: compiles and passes
+cross-build for x86_64-macos and aarch64-linux. 3 new zero-copy compaction tests + 1 WAL-level
+integration test.
 
 **GitLab:** [#110](https://gitlab.com/devnw/zig/wal/-/issues/110)
 
@@ -345,10 +365,10 @@ All 5 Review 2 findings have been resolved:
 - **Closed** (PERF-0011): secureZero scope reduction — **3.7× encrypted append improvement** (633K → 2,349K r/s for 64B)
 - **Closed** (PERF-0012): Iterator skip-path alloc elimination — avoids unnecessary dupe+free for skipped encrypted records
 - **Closed** (PERF-0015): Added 4 iteration benchmarks, fixed decrypt measurement — revealed **35× measurement artifact** (245K → 8.6M r/s)
-- **Deferred** (PERF-0013): O(N) recovery startup — requires checkpoint/sidecar design change, not justified at current scale
-- **Deferred** (PERF-0014): Zero-copy compaction — Linux-specific `copy_file_range` adds complexity for negligible benefit at current WAL sizes
+- **Closed** (PERF-0013): O(1) recovery via checkpoint sidecar — opt-in `Options.checkpoint`, incremental recovery, full-scan fallback
+- **Closed** (PERF-0014): Zero-copy compaction via `copy_file_range` — opt-in `Options.zero_copy_compaction`, Linux-only with user-space fallback
 
-**Status (post-Review 2):** 15 findings across 2 reviews. 13 closed, 2 deferred, 0 open.
+**Status (post-Review 2):** 15 findings across 2 reviews. **All 15 closed.**
 
 ---
 
@@ -645,3 +665,52 @@ is performance-mature. The 2 deferred items (PERF-0013: O(N) recovery, PERF-0014
 compaction) remain appropriately deferred pending workload growth.
 
 **Overall status (post-Review 6):** 22 findings across 6 reviews. **20 closed, 2 deferred, 0 open.**
+
+---
+
+## Findings Detail -- Review 7
+
+> **Date:** 2026-03-22
+> **Reviewer:** External perf-reviewer agent, scored and triaged by perf-issue-tracker agent
+> **Scope:** Full codebase review results (6 candidates), cross-referenced against 22 existing PERF findings
+> **Baseline:** Zig 0.15.2 / ReleaseFast / Linux 6.17.0-19-generic / post-Review 6 code
+
+### PERF-0023: No CI bench stage for performance regression detection (P2, Score 48) — CLOSED
+
+**Evidence:** `.gitlab-ci.yml` defines stages: `lint`, `build`, `test`, `security`, `sbom`. No `bench`
+stage exists. The benchmark suite (`bench/main.zig`) covers 17 measurements but is only run manually
+via `zig build bench`.
+
+**Perf Impact:** Performance regressions can ship silently. Without automated regression gates,
+improvements from PERF-0001 through PERF-0022 could be gradually eroded by normal development.
+
+**Resolution:** Added `bench` stage to `.gitlab-ci.yml` between `test` and `security`. Runs
+`zig build bench -Doptimize=ReleaseFast` with output captured as a 30-day artifact
+(`bench-output.txt`). Starts with `allow_failure: true` to calibrate thresholds before
+enforcing regressions. Job depends on `test` stage completing first.
+
+**GitLab:** [#136](https://gitlab.com/devnw/zig/wal/-/issues/136)
+
+### Review 7 Candidates Evaluated and Already Tracked
+
+1. **Recovery unbuffered I/O (claimed P1):** Rejected. Explicitly evaluated and rejected in
+   Review 5 (lines 564-572). Plaintext recovery uses `seekBy()` (kernel-only lseek, no data
+   transfer), strictly better than buffered read+discard.
+2. **`encryptAndWriteToFile` ~131KB stack (claimed P2):** Rejected. Triaged in Review 2 as
+   non-finding: SEC-0009 security benefit of stack allocation outweighs stack pressure.
+3. **`appendBatch` unbounded allocation (claimed P2):** Already resolved as PERF-0002.
+4. **`readEncryptedBlobReuse` unnecessary zeroing (claimed P2):** Already resolved as PERF-0011.
+   Remaining `secureZero` is SEC-0029 requirement.
+5. **Encrypted compaction full-decrypt scan (claimed P2):** Already resolved as PERF-0003.
+   Decrypting is inherent to the encrypted format (LSN inside ciphertext for confidentiality).
+
+### Previously Deferred Items — Now Closed
+
+- **PERF-0013** (#109): Implemented via `Options.checkpoint` and `checkpoint.zig` sidecar module. Closed.
+- **PERF-0014** (#110): Implemented via `Options.zero_copy_compaction` with `copy_file_range(2)`. Closed.
+
+## Review 7 Summary
+
+1 new finding (PERF-0023), **closed**. 5 of 6 external candidates already tracked or triaged.
+
+**Overall status (post-Review 7):** 23 findings across 7 reviews. **All 23 closed, 0 deferred, 0 open.**

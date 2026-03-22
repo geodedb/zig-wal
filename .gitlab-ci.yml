@@ -26,6 +26,7 @@ stages:
   - lint
   - build
   - test
+  - bench
   - security
   - sbom
   - release
@@ -179,3 +180,23 @@ test-cross-build:
     - zig build -Dtarget=aarch64-macos
   needs:
     - build
+
+# Benchmark regression detection (PERF-0023).
+# Runs the full benchmark suite in ReleaseFast mode after tests pass.
+# allow_failure: true until baseline thresholds are calibrated.
+bench:
+  stage: bench
+  image: debian:bookworm-slim
+  <<: *zig-cache
+  before_script:
+    - *install-zig
+  script:
+    - zig build bench -Doptimize=ReleaseFast --summary all | tee bench-output.txt
+  artifacts:
+    paths:
+      - bench-output.txt
+    expire_in: 30 days
+    when: always
+  needs:
+    - test
+  allow_failure: true

@@ -3,23 +3,62 @@
 > **Source of truth:** [GitLab Issues](https://gitlab.com/devnw/zig/wal/-/issues?label_name%5B%5D=quality)
 > filtered by label `quality`. This file mirrors findings status.
 >
-> **Last updated:** 2026-03-22 (Review 5 items implemented and closed)
+> **Last updated:** 2026-03-22 (Gap closure — QA-0067, QA-0068 closed)
 
 ## Summary
 
-**66 findings** across 8 categories from five comprehensive code-quality, maintainability, and performance reviews.
+**68 findings** across 9 categories from six comprehensive code-quality, maintainability, and performance reviews.
 
 | Metric | Count |
 |--------|-------|
-| Total findings | 66 |
+| Total findings | 68 |
 | Critical severity | 0 |
 | High severity | 11 |
-| Medium severity | 33 |
+| Medium severity | 35 |
 | Low severity | 22 |
-| Confirmed | 65 |
+| Confirmed | 67 |
 | Suspected | 1 |
 | Open | 0 |
-| Closed | 66 |
+| Closed | 68 |
+
+## Stack-Ranked Findings (Review 6 — Closed)
+
+PriorityScore = Impact(1-5) x Likelihood(1-5) x 4. Max = 100.
+
+| # | ID | Score | Severity | Category | Confidence | Title | File(s) | Issue | Status |
+|---|-----|-------|----------|----------|------------|-------|---------|-------|--------|
+| 1 | QA-0068 | 48 | Medium | Documentation | Confirmed | README incorrectly states appendBatch always syncs at end | README.md:113, wal.zig:280-287 | [#138](https://gitlab.com/devnw/zig/wal/-/issues/138) | Closed |
+| 2 | QA-0067 | 24 | Medium | API Contract | Confirmed | WriteAheadLog.filename stores borrowed slice, not owned copy | wal.zig:64,122,326,353,390 | [#137](https://gitlab.com/devnw/zig/wal/-/issues/137) | Closed |
+
+### Review 6 Resolution Summary
+
+2 findings: both implemented and closed.
+
+**Implemented:**
+- **QA-0068**: Corrected README to state that `appendBatch()` respects `sync_every_n` and `manual_sync` (same as `append()`), not "always syncs at the end"
+- **QA-0067**: `WriteAheadLog.filename` now stores an owned copy (`allocator.dupe`) freed in `deinit()`, with `errdefer` cleanup in `init()`. Added unit test proving safety after caller frees the original slice. 80/80 unit tests pass (was 79).
+
+### Review 6 Methodology
+
+**Manual review:** Phase 3 quality-reviewer agent performed readability, architecture,
+documentation, and edge-case analysis across all 8 modules. Findings cross-referenced
+against existing 66 issues (QA-0001-QA-0066) to avoid duplicates.
+
+**Positive observations (10):** Security defense-in-depth (key zeroization, errdefer
+discipline, poisoned-WAL pattern), comptime assertions for format constants, consistent
+CRC variant usage, well-documented security rationales (SEC-0xxx comments), and clean
+module independence.
+
+**Triaged during this review:**
+
+- **R-1 (duplicate encrypted-vs-plaintext dispatch)**: Duplicate of QA-0050 (Won't Fix).
+  Same root cause, same files. Architectural decision stands: scan loops have fundamentally
+  different semantics; extraction would violate module independence.
+- **E-2 (stale file_end after failed compaction)**: False positive. Compaction is atomic
+  via `finalizeTempFile` (temp+fsync+rename). All error paths before rename leave the
+  original file untouched, so `file_end` correctly reflects the original size.
+- **14 Low findings**: Noted but not tracked as issues (various doc gaps, stack sizes,
+  edge cases already covered by existing patterns or architectural decisions).
 
 ## Stack-Ranked Findings (Review 5 — Closed)
 
@@ -181,8 +220,8 @@ The following were flagged during review but confirmed as not-issues:
 | Total source lines (src/) | ~3,870 (includes colocated unit tests) |
 | Total test lines (tests/ + bench/) | ~1,540 |
 | Test-to-source ratio | 0.40 |
-| Unit tests | 79 passing |
+| Unit tests | 99 passing |
 | Integration + scenario tests | 25 passing |
 | Largest file | `wal.zig` (~966 lines) |
-| Modules | 8 (root, wal, record, recovery, compaction, encryption, atomic, iterator) |
+| Modules | 9 (root, wal, record, recovery, compaction, encryption, atomic, iterator, checkpoint) |
 | Modules with zero unit tests | 0 |

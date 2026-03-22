@@ -186,9 +186,11 @@ src/
 ├── root.zig            # Public API re-exports
 ├── wal.zig             # Core WAL engine (WriteAheadLog struct)
 ├── record.zig          # Record framing: serialize, deserialize, CRC
-├── recovery.zig        # Crash recovery: scan, validate, truncate
-├── compaction.zig      # Compaction: rewrite file above watermark
+├── iterator.zig        # Forward iterator over WAL records (QA-0001)
+├── recovery.zig        # Crash recovery: scan, validate, truncate, incremental (PERF-0013)
+├── compaction.zig      # Compaction: rewrite file above watermark, zero-copy (PERF-0014)
 ├── encryption.zig      # Optional AES-256-GCM encryption layer
+├── checkpoint.zig      # Recovery checkpoint sidecar for O(1) startup (PERF-0013)
 └── atomic.zig          # Atomic file operations (temp+fsync+rename)
 
 tests/
@@ -277,6 +279,15 @@ pub const Options = struct {
     /// If true, do not fsync after each append (caller manages durability).
     /// Useful for batch writes where a single sync at the end is sufficient.
     manual_sync: bool = false,
+    /// Sync after every N appends (default: 1). Values > 1 amortize fsync
+    /// cost at the risk of losing up to N-1 records on crash (PERF-0006).
+    sync_every_n: u32 = 1,
+    /// Enable checkpoint sidecar for O(1) recovery on clean shutdown (PERF-0013).
+    /// Falls back to full scan if checkpoint is missing, corrupt, or stale.
+    checkpoint: bool = false,
+    /// Use copy_file_range(2) for zero-copy compaction on Linux (PERF-0014).
+    /// Falls back to user-space copy on non-Linux or unsupported filesystems.
+    zero_copy_compaction: bool = false,
 };
 
 // ── Utilities ──────────────────────────────────────────────────────

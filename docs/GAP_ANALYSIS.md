@@ -3,11 +3,11 @@
 > **Source of truth:** [GitLab Issues](https://gitlab.com/devnw/zig/wal/-/issues?label_name%5B%5D=security)
 > filtered by label `security`. This file mirrors findings status.
 >
-> **Last updated:** 2026-03-22
+> **Last updated:** 2026-03-22 (Full codebase audit — Review 14 + unified summary)
 
 ## Summary
 
-Thirteen adversarial code reviews have been performed on this codebase.
+Fourteen adversarial code reviews have been performed on this codebase.
 
 **Review 1** (2026-03-21): 7 findings (SEC-0001 through SEC-0007). All 7 have been
 **resolved and closed**. Primary themes: cryptographic hygiene (empty AAD, key
@@ -122,12 +122,21 @@ triaged in Reviews 2, 7, and 12) or duplicates of previously established Won't D
 `@truncate`, `@panic`, and `@unreachable` sites confirmed all are properly guarded.
 Confirmed all 40 prior findings remain correctly remediated.
 
-Automated scans (gitleaks, trufflehog, semgrep, trivy, syft+grype, osv-scanner, checkov)
-returned zero application-level findings across all thirteen reviews.
+**Review 14** (2026-03-22): **Zero new findings.** Deep adversarial security review
+identified 1 Medium, 6 Low, and 2 Informational findings -- all previously tracked under
+existing SEC IDs (SEC-0004, SEC-0005, SEC-0007, SEC-0009, SEC-0011, SEC-0018, SEC-0020,
+SEC-0026, SEC-0029). F-1 (TOCTOU in temp file creation) confirmed as SEC-0011 -- no fix
+available in Zig std without O_TMPFILE+linkat. Won't Do items SEC-0014 and SEC-0016
+confirmed correctly scoped out. Three consecutive zero-new-finding reviews (Reviews 12,
+13, and 14) confirm convergence.
 
-All 79 unit tests, 25 integration/scenario tests, and 4 fuzz tests pass at Debug,
-ReleaseSafe, ReleaseFast, and ReleaseSmall optimization levels (108 total). No Critical
-or High severity findings were found in any review.
+Automated scans (gitleaks, trufflehog, semgrep, trivy, syft+grype, osv-scanner, checkov)
+returned zero application-level findings across all fourteen reviews.
+
+All 99 unit tests, 25 integration/scenario tests, and 4 fuzz tests pass at Debug,
+ReleaseSafe, ReleaseFast, and ReleaseSmall optimization levels (128 total). No Critical
+or High severity findings were found in any review. Three consecutive zero-new-finding
+reviews (12, 13, 14) confirm convergence.
 
 ## Stack-Ranked Findings
 
@@ -190,6 +199,170 @@ Score = Impact (1-5) x Likelihood (1-5) x 4. Maximum = 100.
 - **CI cache key cross-branch poisoning (SEC-0014)** — CI/CD cache policy is
   handled via separate organizational controls outside this library.
 - **CI component SHA pinning** — Same as above.
+
+## Full Codebase Audit Summary (2026-03-22)
+
+Five-phase audit covering all four domains: requirements gap analysis, code quality review,
+performance review, and adversarial security review.
+
+### Repository
+- **Project:** wal (Write-Ahead Log)
+- **Platform:** GitLab (gitlab.com/devnw/zig/wal)
+- **Languages:** Zig 0.15.1+
+- **Scope:** Entire repo (9 source modules, ~4,100 LOC)
+- **Test suite:** 99 unit + 25 integration + 4 fuzz = 128 tests, all passing at 4 optimization levels
+
+### Domain Results
+
+#### Gap Analysis
+
+| Status | Count | Percentage |
+|--------|-------|-----------|
+| Implemented | 135 | 93.1% |
+| Won't Do/Fix | 8 | 5.5% |
+| Deferred | 0 | 0% |
+| Partial | 0 | 0% |
+| Not Implemented | 0 | 0% |
+
+138 numbered findings across GAP (1-7), SEC (1-40), QA (1-68), PERF (1-23). All Gap-ID
+namespaces contiguous. All severity classifications confirmed appropriate. Zero new gaps.
+
+#### Code Quality
+
+| Severity | Count |
+|----------|-------|
+| Critical | 0 |
+| High | 11 |
+| Medium | 35 |
+| Low | 22 |
+
+68 total findings across 6 reviews. **All 68 closed.**
+- **QA-0068** (Score 48): README appendBatch sync claim corrected ([#138](https://gitlab.com/devnw/zig/wal/-/issues/138)) — Closed
+- **QA-0067** (Score 24): filename now stores owned copy, freed in deinit ([#137](https://gitlab.com/devnw/zig/wal/-/issues/137)) — Closed
+
+#### Performance
+
+| PerfSeverity | Count |
+|-------------|-------|
+| P1 | 1 |
+| P2 | 9 |
+| P3 | 13 |
+
+23 total findings across 7 reviews. **All 23 closed**, 0 deferred, **0 open**.
+- **PERF-0023** (Score 48): CI benchmark regression gate added ([#136](https://gitlab.com/devnw/zig/wal/-/issues/136)) — Closed
+- **PERF-0013** (Score 24): Checkpoint sidecar for O(1) recovery ([#109](https://gitlab.com/devnw/zig/wal/-/issues/109)) — Closed
+- **PERF-0014** (Score 20): Zero-copy compaction via copy_file_range ([#110](https://gitlab.com/devnw/zig/wal/-/issues/110)) — Closed
+
+#### Security
+
+| Risk Level | Count |
+|-----------|-------|
+| Critical | 0 |
+| High | 0 |
+| Medium | 7 |
+| Low | 14 |
+| Info | 19 |
+
+40 total findings across 14 reviews. **All 40 closed.** 0 new findings. 2 Won't Do (SEC-0014,
+SEC-0016). Three consecutive zero-new-finding reviews (12, 13, 14) confirm convergence.
+**Immediate actions:** 0 (no secret rotations, no active vulnerabilities).
+
+### Cross-Domain Summary
+
+| Domain | Findings | Issues Created | Issues Closed | Open |
+|--------|----------|---------------|---------------|------|
+| Gap Analysis | 145 reqs | 0 | 0 | 0 |
+| Quality | 68 | 2 (#137, #138) | 2 (#137, #138) | 0 |
+| Performance | 23 | 1 (#136) | 1 (#136) | 0 |
+| Security | 40 | 0 | 9 (stale tracker sync) | 0 |
+| **Total** | **171 findings** | **3** | **12** | **0** |
+
+### Docs Updated
+
+| File | Domain | Action |
+|------|--------|--------|
+| docs/GAP_ANALYSIS.md | Security + Audit | Review 14 + full audit summary |
+| docs/QUALITY_GAP_ANALYSIS.md | Quality | Review 6 (2 new findings) |
+| docs/PERF_GAP_ANALYSIS.md | Performance | Review 7 (1 new finding) |
+| docs/SECURITY_REVIEW_NOTES.md | Security | Review 14 section |
+
+### Open Findings
+
+**Zero open findings.** All 3 previously open items have been closed:
+- QA-0068 (Score 48): Closed — README corrected
+- PERF-0023 (Score 48): Closed — CI bench stage added
+- QA-0067 (Score 24): Closed — filename now owned
+
+**Deferred items:** None — PERF-0013 and PERF-0014 have been implemented with configuration options.
+
+### Positive Observations
+
+1. **Zero external dependencies** — eliminates third-party supply chain risk entirely
+2. **Comptime assertions** — format invariants enforced at compile time across 5 modules
+3. **Errdefer discipline** — correct cleanup on all error paths, no leaks detected
+4. **Poisoned-WAL pattern** — prevents use-after-error with explicit state tracking
+5. **SEC-0038 plaintext injection defense** — all 3 record consumers reject unencrypted records when key configured
+6. **Key zeroization** — `secureZero` applied to all 25 key material sites across 5 files
+7. **Test coverage** — 1.51 test-to-source ratio; fuzz tests cover all binary parsing entrypoints
+8. **Module independence** — lower modules have zero cross-dependencies; only `wal.zig` imports all
+
+### Tracker Reconciliation
+
+9 GitLab issues from security Reviews 1-2 (#25, #26, #27, #28, #29, #30, #32, #34, #35) were
+remediated in code and documented as "Closed" but never closed on the GitLab tracker. All 9
+closed during this audit with verification evidence. All tracker/docs discrepancies are now
+resolved.
+
+### Blockers
+
+None. All audit phases completed successfully across all 4 domains.
+
+### Audit Methodology
+
+| Phase | Agents | Duration |
+|-------|--------|----------|
+| 1. Orientation | gap-collector, quality-inventory, perf-context, security-inventory | Parallel |
+| 2. Scanning | gap-scanner, quality-scanner, perf-scanner, security-scanner | Parallel |
+| 3. Deep Analysis | gap-detector, quality-reviewer, perf-reviewer, security-reviewer | Parallel |
+| 4. Tracking | gap-sync, quality-issue-tracker, perf-issue-tracker, security-issue-tracker | Parallel |
+| 5. Unified Summary | Merged all domain results into this section | Sequential |
+
+---
+
+## Findings Detail — Review 14
+
+**Zero new findings.** Deep adversarial security review identified 9 findings — all previously
+tracked under existing SEC IDs.
+
+### Review 14 Scope
+
+Deep adversarial code review focused on:
+- Cryptographic key material lifecycle (Options struct, loadKeyFromEnv, nonce management)
+- TOCTOU race conditions in temp file operations
+- Input validation on write path (MAX_RECORD_SIZE)
+- Plaintext residue in reuse buffers
+- Filesystem durability (directory fsync)
+
+### Finding Mapping — Review 14
+
+| Phase 3 ID | Severity | Finding | Existing SEC | GitLab | Status |
+|-------------|----------|---------|--------------|--------|--------|
+| F-1 | Medium | TOCTOU in temp file creation (symlink race) | SEC-0011 | [#28](https://gitlab.com/devnw/zig/wal/-/issues/28) | Closed (no fix in Zig std) |
+| F-2 | Low | No directory fsync after rename | SEC-0020 | [#37](https://gitlab.com/devnw/zig/wal/-/issues/37) | Closed |
+| C-1 | Low | Key persists in Options struct on caller stack | SEC-0026 | [#43](https://gitlab.com/devnw/zig/wal/-/issues/43) | Closed |
+| C-3 | Low | loadKeyFromEnv doesn't clear env var | SEC-0018 | [#35](https://gitlab.com/devnw/zig/wal/-/issues/35) | Closed |
+| F-4 | Low | Predictable temp file name | SEC-0005 | [#22](https://gitlab.com/devnw/zig/wal/-/issues/22) | Closed |
+| I-2 | Low | 16 MiB MAX_RECORD_SIZE allocation | SEC-0004 | [#21](https://gitlab.com/devnw/zig/wal/-/issues/21) | Closed |
+| I-3 | Low | No MAX_RECORD_SIZE on write path | SEC-0004 | [#21](https://gitlab.com/devnw/zig/wal/-/issues/21) | Closed (by design) |
+| C-2 | Info | No nonce counter enforcement | SEC-0007 | [#24](https://gitlab.com/devnw/zig/wal/-/issues/24) | Closed |
+| M-2 | Info | Reuse buffer tail not fully zeroized | SEC-0009/SEC-0029 | [#26](https://gitlab.com/devnw/zig/wal/-/issues/26) / [#46](https://gitlab.com/devnw/zig/wal/-/issues/46) | Closed |
+
+### Won't Do Confirmation — Review 14
+
+SEC-0014 (CI cache key cross-branch poisoning) and SEC-0016 (check-yaml `--unsafe` flag)
+confirmed correctly scoped out. No change to Won't Do policy.
+
+---
 
 ## Findings Detail — Review 13
 

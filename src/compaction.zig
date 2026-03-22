@@ -74,6 +74,71 @@ fn finalizeTempFile(dir: std.fs.Dir, tmp: std.fs.File, tmp_name: []const u8, fil
 }
 
 // ============================================================================
+// Bulk copy helpers (PERF-0014)
+// ============================================================================
+
+/// Copy all remaining data from `src` (current position to EOF) into `dst`.
+///
+/// When `zero_copy` is true on Linux, uses `copy_file_range(2)` to transfer
+/// data inside the kernel without user-space buffering. Falls back to the
+/// user-space loop if the syscall is unavailable or on non-Linux platforms.
+fn bulkCopy(src: std.fs.File, dst: std.fs.File, zero_copy: bool) !u64 {
+    if (zero_copy) {
+        return zeroCopyTransfer(src, dst) catch |err| switch (err) {
+            // Unsupported or cross-filesystem — fall back.
+            error.OperationNotSupported => return userSpaceCopy(src, dst),
+            else => return err,
+        };
+    }
+    return userSpaceCopy(src, dst);
+}
+
+/// User-space copy loop using a 256 KiB stack buffer (original PERF-0008 path).
+fn userSpaceCopy(src: std.fs.File, dst: std.fs.File) !u64 {
+    var copy_buf: [COPY_BUF_SIZE]u8 = undefined;
+    var bytes_written: u64 = 0;
+    while (true) {
+        const n = try src.read(&copy_buf);
+        if (n == 0) break;
+        try dst.writeAll(copy_buf[0..n]);
+        bytes_written += n;
+    }
+    return bytes_written;
+}
+
+/// Zero-copy transfer using Linux `copy_file_range(2)` (PERF-0014).
+///
+/// Copies data entirely in kernel space, avoiding user-space buffer copies.
+/// The transfer is done in 256 KiB chunks to match the user-space buffer size.
+///
+/// Returns `error.OperationNotSupported` if the syscall is not available
+/// (non-Linux, old kernel, or cross-filesystem with incompatible backing stores).
+fn zeroCopyTransfer(src: std.fs.File, dst: std.fs.File) !u64 {
+    const native_os = @import("builtin").os.tag;
+    if (native_os != .linux) return error.OperationNotSupported;
+
+    var bytes_written: u64 = 0;
+    while (true) {
+        const n = std.os.linux.copy_file_range(src.handle, null, dst.handle, null, COPY_BUF_SIZE, 0);
+        switch (std.os.linux.E.init(n)) {
+            .SUCCESS => {},
+            .INTR => continue, // Interrupted by signal — retry (SEC NEW-6).
+            .NOSYS, .XDEV, .INVAL => return error.OperationNotSupported,
+            .BADF => return error.BadFileDescriptor,
+            .IO => return error.InputOutput,
+            .ISDIR => return error.IsDir,
+            .NOMEM => return error.SystemResources,
+            .NXIO => return error.Unseekable,
+            .PERM => return error.AccessDenied,
+            else => return error.Unexpected,
+        }
+        if (n == 0) break; // EOF
+        bytes_written += n;
+    }
+    return bytes_written;
+}
+
+// ============================================================================
 // Public API
 // ============================================================================
 
@@ -105,6 +170,7 @@ pub fn compact(
     filename: []const u8,
     up_to_lsn: u64,
     encryption_key: ?*const [32]u8,
+    zero_copy: bool,
 ) !CompactResult {
     // Derive the temporary filename from the target filename.
     var tmp_name_buf: [atomic.TMP_NAME_BUF_SIZE]u8 = undefined;
@@ -223,15 +289,7 @@ pub fn compact(
         dir.deleteFile(tmp_name) catch {};
     }
 
-    var copy_buf: [COPY_BUF_SIZE]u8 = undefined;
-    var bytes_written: u64 = 0;
-
-    while (true) {
-        const n = try src.read(&copy_buf);
-        if (n == 0) break;
-        try tmp.writeAll(copy_buf[0..n]);
-        bytes_written += n;
-    }
+    const bytes_written = try bulkCopy(src, tmp, zero_copy);
 
     try finalizeTempFile(dir, tmp, tmp_name, filename);
 
@@ -258,7 +316,7 @@ test "compact: removes records below watermark" {
     wf.close();
 
     // Compact: keep only records with LSN > 3.
-    const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, null);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, null, false);
     try std.testing.expectEqual(@as(u64, 2), result.records_kept);
 
     // Re-open and verify only LSNs 4 and 5 remain.
@@ -291,7 +349,7 @@ test "compact: all records removed" {
     wf.close();
 
     // Compact above max LSN → all records removed.
-    const result = try compact(allocator, tmp_dir.dir, "wal.log", 100, null);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 100, null, false);
     try std.testing.expectEqual(@as(u64, 0), result.records_kept);
     try std.testing.expectEqual(@as(u64, 0), result.new_size);
 
@@ -316,7 +374,7 @@ test "compact: no records removed" {
     const original_stat = try tmp_dir.dir.statFile("wal.log");
 
     // Compact at watermark 0 → all records have LSN > 0, so all kept.
-    const result = try compact(allocator, tmp_dir.dir, "wal.log", 0, null);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 0, null, false);
     try std.testing.expectEqual(@as(u64, 3), result.records_kept);
     try std.testing.expectEqual(original_stat.size, result.new_size);
 
@@ -338,7 +396,7 @@ test "compact: append after compact works" {
     wf.close();
 
     // Compact: keep LSN > 2 (keeps LSNs 3 and 4).
-    const result = try compact(allocator, tmp_dir.dir, "wal.log", 2, null);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 2, null, false);
     try std.testing.expectEqual(@as(u64, 2), result.records_kept);
 
     // Append two more records: LSN 5 and 6.
@@ -375,7 +433,7 @@ test "compact: filename too long returns error" {
 
     // 253 chars + ".tmp" = 257 > 256-byte buffer in compact().
     const long_name = "a" ** 253;
-    const result = compact(allocator, tmp_dir.dir, long_name, 0, null);
+    const result = compact(allocator, tmp_dir.dir, long_name, 0, null, false);
     try std.testing.expectError(error.FilenameTooLong, result);
 }
 
@@ -401,7 +459,7 @@ test "compact: encrypted — removes records below watermark (QA-0025)" {
     wf.close();
 
     // Compact: keep only records with LSN > 3.
-    const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, &key);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, &key, false);
     try std.testing.expectEqual(@as(u64, 2), result.records_kept);
 
     // Re-open and verify only LSNs 4 and 5 remain by reading encrypted records.
@@ -444,7 +502,7 @@ test "compact: encrypted — all records removed (QA-0025)" {
     wf.close();
 
     // Compact above max LSN → all records removed.
-    const result = try compact(allocator, tmp_dir.dir, "wal.log", 100, &key);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 100, &key, false);
     try std.testing.expectEqual(@as(u64, 0), result.records_kept);
     try std.testing.expectEqual(@as(u64, 0), result.new_size);
 
@@ -471,11 +529,99 @@ test "compact: encrypted — no records removed (QA-0025)" {
     const original_stat = try tmp_dir.dir.statFile("wal.log");
 
     // Compact at watermark 0 → all records have LSN > 0, so all kept.
-    const result = try compact(allocator, tmp_dir.dir, "wal.log", 0, &key);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 0, &key, false);
     try std.testing.expectEqual(@as(u64, 3), result.records_kept);
     try std.testing.expectEqual(original_stat.size, result.new_size);
 
     // Verify file is unchanged.
     const new_stat = try tmp_dir.dir.statFile("wal.log");
     try std.testing.expectEqual(original_stat.size, new_stat.size);
+}
+
+// ============================================================================
+// Zero-copy compaction tests (PERF-0014)
+// ============================================================================
+
+test "compact: zero-copy removes records below watermark (PERF-0014)" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    for (1..6) |lsn| {
+        _ = try record.writeToFile(allocator, wf, @intCast(lsn), "payload");
+    }
+    wf.close();
+
+    // Compact with zero_copy=true.
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, null, true);
+    try std.testing.expectEqual(@as(u64, 2), result.records_kept);
+
+    // Verify only LSNs 4 and 5 remain.
+    const rf = try tmp_dir.dir.openFile("wal.log", .{ .mode = .read_only });
+    defer rf.close();
+
+    var expected_lsn: u64 = 4;
+    while (true) {
+        const hdr_result = try record.readHeaderRaw(rf) orelse break;
+        const payload = try record.readPayloadAndVerify(allocator, rf, hdr_result.info, hdr_result.raw) orelse break;
+        defer allocator.free(payload);
+        try std.testing.expectEqual(expected_lsn, hdr_result.info.lsn);
+        expected_lsn += 1;
+    }
+    try std.testing.expectEqual(@as(u64, 6), expected_lsn);
+}
+
+test "compact: zero-copy all records removed (PERF-0014)" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    for (1..4) |lsn| {
+        _ = try record.writeToFile(allocator, wf, @intCast(lsn), "data");
+    }
+    wf.close();
+
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 100, null, true);
+    try std.testing.expectEqual(@as(u64, 0), result.records_kept);
+    try std.testing.expectEqual(@as(u64, 0), result.new_size);
+}
+
+test "compact: zero-copy encrypted (PERF-0014)" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const key = test_key;
+
+    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    for (1..6) |lsn| {
+        _ = try encryption.encryptAndWriteToFile(allocator, wf, &key, @intCast(lsn), "payload");
+    }
+    wf.close();
+
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, &key, true);
+    try std.testing.expectEqual(@as(u64, 2), result.records_kept);
+
+    // Verify records.
+    const rf = try tmp_dir.dir.openFile("wal.log", .{ .mode = .read_only });
+    defer rf.close();
+
+    var expected_lsn: u64 = 4;
+    while (true) {
+        var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
+        const peek_n = try rf.readAll(&peek_buf);
+        if (peek_n < encryption.DETECT_PEEK_SIZE) break;
+        const blob_result = try encryption.readEncryptedBlob(allocator, rf, &peek_buf) orelse break;
+        defer {
+            encryption.secureZero(blob_result.blob);
+            allocator.free(blob_result.blob);
+        }
+        const plaintext = try encryption.decryptRecordInPlace(&key, blob_result.blob);
+        const rec = try record.deserialize(plaintext);
+        try std.testing.expectEqual(expected_lsn, rec.lsn);
+        expected_lsn += 1;
+    }
+    try std.testing.expectEqual(@as(u64, 6), expected_lsn);
 }

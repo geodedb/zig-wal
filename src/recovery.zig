@@ -76,6 +76,106 @@ pub fn recover(allocator: std.mem.Allocator, file: std.fs.File) !RecoveryInfo {
     return recoverWithKey(allocator, file, null);
 }
 
+/// Incremental recovery: scan `file` starting from a checkpoint position
+/// rather than from byte 0 (PERF-0013).
+///
+/// The checkpoint provides the known-good state up to `start.valid_end`.
+/// This function seeks to that position and continues the forward scan,
+/// using `start.last_lsn` as the monotonicity baseline.
+///
+/// If the file is shorter than `start.valid_end`, returns `error.CheckpointStale`
+/// so the caller can fall back to a full scan.
+pub fn recoverFrom(
+    allocator: std.mem.Allocator,
+    file: std.fs.File,
+    start: RecoveryInfo,
+) !RecoveryInfo {
+    return recoverFromWithKey(allocator, file, start, null);
+}
+
+/// Incremental recovery with encryption key support (PERF-0013).
+///
+/// Returns `error.CheckpointStale` if the file is shorter than
+/// `start.valid_end`, indicating the checkpoint is no longer valid.
+pub fn recoverFromWithKey(
+    allocator: std.mem.Allocator,
+    file: std.fs.File,
+    start: RecoveryInfo,
+    key: ?*const [32]u8,
+) !RecoveryInfo {
+    // Verify the file is at least as large as the checkpoint claims.
+    const stat = try file.stat();
+    if (stat.size < start.valid_end) return error.CheckpointStale;
+
+    // Seek to the checkpoint position and scan forward.
+    try file.seekTo(start.valid_end);
+
+    // Seed the scan state from the checkpoint.
+    // If the checkpoint has a non-zero last_lsn, ensure record_count > 0
+    // so the monotonicity guard is active from the first incremental record.
+    // Without this, a crafted record with LSN <= last_lsn appended after the
+    // checkpoint would be accepted (SEC audit NEW-1).
+    var info = start;
+    if (info.last_lsn > 0 and info.record_count == 0) {
+        info.record_count = 1;
+    }
+
+    // Reusable buffer for encrypted record reads (PERF-0016).
+    var reuse_buf: ?[]u8 = null;
+    defer if (reuse_buf) |buf| {
+        encryption.secureZero(buf); // SEC-0029
+        allocator.free(buf);
+    };
+
+    while (true) {
+        var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
+        const peek_n = try file.readAll(&peek_buf);
+        if (peek_n < encryption.DETECT_PEEK_SIZE) break;
+
+        if (key != null and encryption.isEncrypted(&peek_buf)) {
+            const blob_result = try encryption.readEncryptedBlobReuse(allocator, file, &peek_buf, &reuse_buf) orelse break;
+            const plaintext = encryption.decryptRecordInPlace(key.?, blob_result.blob) catch break;
+            const rec = record.deserialize(plaintext) catch break;
+
+            if (info.record_count > 0 and rec.lsn <= info.last_lsn) break;
+            info.last_lsn = rec.lsn;
+            info.record_count += 1;
+            info.valid_end += blob_result.total_on_disk;
+        } else if (key != null) {
+            break; // SEC-0038
+        } else {
+            const header_buf: [record.HEADER_SIZE]u8 = peek_buf;
+            const lsn = std.mem.readInt(u64, header_buf[0..8], .little);
+            const payload_len = std.mem.readInt(u32, header_buf[8..12], .little);
+            const tail_len = @as(usize, payload_len) + record.CRC_SIZE;
+
+            if (record.HEADER_SIZE + tail_len > record.MAX_RECORD_SIZE) break;
+
+            if (tail_len <= STACK_READ_THRESHOLD + record.CRC_SIZE) {
+                var stack_buf: [STACK_READ_THRESHOLD + record.CRC_SIZE]u8 = undefined;
+                const tail = stack_buf[0..tail_len];
+                const n = try file.readAll(tail);
+                if (n < tail_len) break;
+                if (!record.verifyCrc(header_buf, tail[0..payload_len], tail[payload_len..])) break;
+            } else {
+                const heap_buf = try allocator.alloc(u8, tail_len);
+                defer allocator.free(heap_buf);
+                const n = try file.readAll(heap_buf);
+                if (n < tail_len) break;
+                if (!record.verifyCrc(header_buf, heap_buf[0..payload_len], heap_buf[payload_len..])) break;
+            }
+
+            if (info.record_count > 0 and lsn <= info.last_lsn) break;
+            info.last_lsn = lsn;
+            info.record_count += 1;
+            info.valid_end += @as(u64, record.HEADER_SIZE) + @as(u64, payload_len) + @as(u64, record.CRC_SIZE);
+        }
+    }
+
+    try file.seekTo(info.valid_end);
+    return info;
+}
+
 /// Scan `file` from the beginning, handling both plaintext and encrypted
 /// records.
 ///
@@ -637,4 +737,136 @@ test "recoverWithKey: encrypted then plaintext stops at boundary (SEC-0038)" {
     try std.testing.expectEqual(@as(u64, 2), info.last_lsn);
     try std.testing.expectEqual(@as(u64, enc1 + enc2), info.valid_end);
     try std.testing.expectEqual(@as(u64, 2), info.record_count);
+}
+
+// ============================================================================
+// Incremental recovery tests (PERF-0013)
+// ============================================================================
+
+test "recoverFrom: exact checkpoint — no additional records" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    _ = try record.writeToFile(allocator, file, 1, "one");
+    _ = try record.writeToFile(allocator, file, 2, "two");
+
+    // Get the full recovery state.
+    const full_info = try recover(allocator, file);
+
+    // Incremental from the same state — should return unchanged.
+    const inc_info = try recoverFrom(allocator, file, full_info);
+    try std.testing.expectEqual(full_info.last_lsn, inc_info.last_lsn);
+    try std.testing.expectEqual(full_info.valid_end, inc_info.valid_end);
+    try std.testing.expectEqual(full_info.record_count, inc_info.record_count);
+}
+
+test "recoverFrom: picks up new records after checkpoint" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    _ = try record.writeToFile(allocator, file, 1, "one");
+    _ = try record.writeToFile(allocator, file, 2, "two");
+
+    // Snapshot after 2 records.
+    const ckpt = try recover(allocator, file);
+
+    // Seek to end and write 2 more records.
+    try file.seekTo(ckpt.valid_end);
+    _ = try record.writeToFile(allocator, file, 3, "three");
+    _ = try record.writeToFile(allocator, file, 4, "four");
+
+    // Incremental recovery should find the 2 new records.
+    const inc_info = try recoverFrom(allocator, file, ckpt);
+    try std.testing.expectEqual(@as(u64, 4), inc_info.last_lsn);
+    try std.testing.expectEqual(@as(u64, 4), inc_info.record_count);
+}
+
+test "recoverFrom: stale checkpoint returns error" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    _ = try record.writeToFile(allocator, file, 1, "one");
+
+    // Create a checkpoint claiming more data than the file has.
+    const stale_ckpt = RecoveryInfo{
+        .last_lsn = 100,
+        .valid_end = 99999,
+        .record_count = 50,
+    };
+
+    const result = recoverFrom(allocator, file, stale_ckpt);
+    try std.testing.expectError(error.CheckpointStale, result);
+}
+
+test "recoverFromWithKey: incremental encrypted recovery (PERF-0013)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    const key = test_key;
+    _ = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "enc-one");
+    _ = try encryption.encryptAndWriteToFile(allocator, file, &key, 2, "enc-two");
+
+    // Checkpoint after 2 encrypted records.
+    const ckpt = try recoverWithKey(allocator, file, &key);
+
+    // Write 1 more encrypted record.
+    try file.seekTo(ckpt.valid_end);
+    _ = try encryption.encryptAndWriteToFile(allocator, file, &key, 3, "enc-three");
+
+    // Incremental recovery should find the new record.
+    const inc_info = try recoverFromWithKey(allocator, file, ckpt, &key);
+    try std.testing.expectEqual(@as(u64, 3), inc_info.last_lsn);
+    try std.testing.expectEqual(@as(u64, 3), inc_info.record_count);
+}
+
+test "recoverFrom: rejects non-monotonic LSN at checkpoint boundary (SEC NEW-1)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    // Write 3 records: LSNs 1, 2, 3.
+    _ = try record.writeToFile(allocator, file, 1, "one");
+    _ = try record.writeToFile(allocator, file, 2, "two");
+    _ = try record.writeToFile(allocator, file, 3, "three");
+
+    // Create a checkpoint at LSN 3 with record_count=0 (simulating the
+    // original bug where deinit always wrote record_count=0).
+    const ckpt = RecoveryInfo{
+        .last_lsn = 3,
+        .valid_end = try file.getPos(),
+        .record_count = 0,
+    };
+
+    // Append a crafted record with LSN=1 (non-monotonic: 1 <= 3).
+    _ = try record.writeToFile(allocator, file, 1, "regression");
+
+    // Incremental recovery must reject the non-monotonic record.
+    // Before the fix, record_count=0 would bypass the monotonicity guard.
+    const inc_info = try recoverFrom(allocator, file, ckpt);
+    try std.testing.expectEqual(@as(u64, 3), inc_info.last_lsn);
+    try std.testing.expectEqual(ckpt.valid_end, inc_info.valid_end);
 }
