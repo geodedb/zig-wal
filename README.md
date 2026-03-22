@@ -55,10 +55,12 @@ const std = @import("std");
 const wal = @import("wal");
 
 pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
     // Open or create a WAL (takes a directory handle + filename)
-    var dir = try std.fs.cwd().openDir("/tmp", .{});
+    var dir = try std.fs.cwd().openDir("data", .{});
     defer dir.close();
 
     var log = try wal.WriteAheadLog.init(allocator, dir, "my-app.wal", .{});
@@ -88,6 +90,59 @@ var log = try wal.WriteAheadLog.init(allocator, dir, "secure.wal", .{
     .encryption_key = my_256_bit_key,
 });
 ```
+
+## Durability Configuration
+
+By default every `append()` call syncs to disk immediately (`fdatasync`). This
+is the safest option but limits throughput to one fsync per record.
+
+```zig
+// Sync every 100 appends (trade durability window for throughput)
+var log = try wal.WriteAheadLog.init(allocator, dir, "my.wal", .{
+    .sync_every_n = 100,
+});
+
+// Full manual control — caller decides when to sync
+var log2 = try wal.WriteAheadLog.init(allocator, dir, "my.wal", .{
+    .manual_sync = true,
+});
+// ... append many records ...
+try log2.sync(); // explicit sync
+```
+
+`appendBatch()` always syncs once at the end, regardless of `sync_every_n`.
+
+## Crash Recovery
+
+Recovery runs **automatically** during `init()` — no user action is needed.
+
+- The WAL file is scanned forward from byte 0, validating each record's CRC
+  (plaintext) or AES-GCM authentication tag (encrypted).
+- Any partial trailing record (torn write) is truncated.
+- LSN monotonicity is verified — records with non-increasing LSNs are treated
+  as corruption and the file is truncated at the last valid record.
+- Encrypted and plaintext records are detected transparently via magic-byte
+  probing.
+
+After `init()` returns, the WAL is guaranteed to contain only fully-written,
+integrity-verified records.
+
+## Key Management
+
+All records are encrypted with the single key provided at `init()` time.
+There is no built-in multi-key support.
+
+**Key rotation procedure:**
+1. Compact the WAL with the current key (rewrites all retained records).
+2. Close the WAL (`deinit()`).
+3. Re-open with the new key.
+
+The encryption key is zeroized in memory on `deinit()`. Callers should also
+zeroize their own copy of the key after passing it to `init()` (see
+`encryption.secureZero`).
+
+AES-256-GCM's security degrades after ~2^32 encryptions under the same key.
+Rotate keys before reaching this limit in high-throughput systems.
 
 ## Design
 

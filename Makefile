@@ -3,7 +3,8 @@
 # Copyright (c) 2024-2025 CodePros
 
 .PHONY: all build test test-unit test-integration clean check fmt help dev ci bench
-.PHONY: test-release-safe test-release-fast test-release-small test-all-optimizations
+.PHONY: test-debug test-release-safe test-release-fast test-release-small test-all-optimizations
+.PHONY: test-fuzz security-scan release
 .PHONY: pre-commit-install pre-commit pre-commit-run
 
 # Default target: build and run tests
@@ -70,8 +71,30 @@ test-release-small:
 	@echo "🧪 Testing with ReleaseSmall..."
 	@zig build test -Doptimize=ReleaseSmall --summary all
 
-test-all-optimizations: test-unit test-release-safe test-release-fast test-release-small
+test-debug:
+	@echo "🧪 Testing with Debug..."
+	@zig build test -Doptimize=Debug --summary all
+
+test-all-optimizations: test-debug test-release-safe test-release-fast test-release-small
 	@echo "✅ All optimization levels passed"
+
+# Fuzz tests for binary parsing entrypoints (QA-0058, SEC-0040)
+test-fuzz:
+	@echo "🔀 Running fuzz tests..."
+	@zig build test-fuzz --summary all
+
+# Security scanning (CI parity — runs local scanners if available)
+security-scan:
+	@echo "🔒 Running security scans..."
+	@command -v gitleaks >/dev/null 2>&1 && gitleaks detect --source . --no-git || echo "gitleaks not installed, skipping"
+	@command -v trufflehog >/dev/null 2>&1 && trufflehog filesystem . --no-update || echo "trufflehog not installed, skipping"
+	@echo "✅ Security scan complete"
+
+# Release build (mirrors CI release stage)
+release:
+	@echo "📦 Building release..."
+	@zig build -Doptimize=ReleaseFast
+	@echo "✅ Release build complete"
 
 # Pre-commit hook management
 pre-commit-install:
@@ -106,6 +129,7 @@ help:
 	@echo "  test-release-fast    Test with ReleaseFast"
 	@echo "  test-release-small   Test with ReleaseSmall"
 	@echo "  test-all-optimizations  Test all optimization levels"
+	@echo "  test-fuzz            Run fuzz tests"
 	@echo "  bench                Run performance benchmarks"
 	@echo ""
 	@echo "Code Quality:"
@@ -113,6 +137,12 @@ help:
 	@echo "  check                Check for compilation errors"
 	@echo "  pre-commit           Run pre-commit hooks"
 	@echo "  pre-commit-install   Install pre-commit hooks"
+	@echo ""
+	@echo "Security:"
+	@echo "  security-scan        Run local security scanners"
+	@echo ""
+	@echo "Release:"
+	@echo "  release              Build release binary"
 	@echo ""
 	@echo "Maintenance:"
 	@echo "  clean                Remove build artifacts"

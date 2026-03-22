@@ -61,12 +61,17 @@ pub const ENCRYPTION_OVERHEAD: usize = BLOB_LEN_SIZE + MAGIC_SIZE + NONCE_SIZE +
 /// Used as the peek buffer size across recovery, compaction, and iteration (QA-0014).
 pub const DETECT_PEEK_SIZE: usize = BLOB_LEN_SIZE + MAGIC_SIZE; // 12
 
-// Byte offsets within a serialised encrypted record.
-const OFF_BLOB_LEN: usize = 0; // u32 LE at [0..4]
-const OFF_MAGIC: usize = 4; // [4..12]
-const OFF_NONCE: usize = 12; // [12..24]
-const OFF_TAG: usize = 24; // [24..40]
-const OFF_CIPHERTEXT: usize = 40; // [40..]
+// Byte offsets within a serialised encrypted record, derived from field sizes (QA-0066).
+const OFF_BLOB_LEN: usize = 0;
+const OFF_MAGIC: usize = OFF_BLOB_LEN + BLOB_LEN_SIZE;
+const OFF_NONCE: usize = OFF_MAGIC + MAGIC_SIZE;
+const OFF_TAG: usize = OFF_NONCE + NONCE_SIZE;
+const OFF_CIPHERTEXT: usize = OFF_TAG + TAG_SIZE;
+
+comptime {
+    // Lock the invariant: ciphertext starts exactly at the encryption overhead boundary.
+    if (OFF_CIPHERTEXT != ENCRYPTION_OVERHEAD) @compileError("OFF_CIPHERTEXT must equal ENCRYPTION_OVERHEAD");
+}
 
 // ============================================================================
 // Errors

@@ -3,23 +3,63 @@
 > **Source of truth:** [GitLab Issues](https://gitlab.com/devnw/zig/wal/-/issues?label_name%5B%5D=quality)
 > filtered by label `quality`. This file mirrors findings status.
 >
-> **Last updated:** 2026-03-22
+> **Last updated:** 2026-03-22 (Review 5 items implemented and closed)
 
 ## Summary
 
-**59 findings** across 8 categories from four comprehensive code-quality, maintainability, and performance reviews.
+**66 findings** across 8 categories from five comprehensive code-quality, maintainability, and performance reviews.
 
 | Metric | Count |
 |--------|-------|
-| Total findings | 59 |
+| Total findings | 66 |
 | Critical severity | 0 |
 | High severity | 11 |
-| Medium severity | 28 |
-| Low severity | 20 |
-| Confirmed | 58 |
+| Medium severity | 33 |
+| Low severity | 22 |
+| Confirmed | 65 |
 | Suspected | 1 |
 | Open | 0 |
-| Closed | 59 |
+| Closed | 66 |
+
+## Stack-Ranked Findings (Review 5 — Closed)
+
+PriorityScore = Impact(1–5) × Likelihood(1–5) × 4. Max = 100.
+
+| # | ID | Score | Severity | Category | Confidence | Title | File(s) | Issue | Status |
+|---|-----|-------|----------|----------|------------|-------|---------|-------|--------|
+| 1 | QA-0060 | 60 | Medium | CI/CD | Confirmed | Makefile missing 4 CI-parity targets (test-fuzz, test-all-optimizations, security-scan, release) | Makefile | [#129](https://gitlab.com/devnw/zig/wal/-/issues/129) | Closed |
+| 2 | QA-0061 | 48 | Medium | Documentation | Confirmed | README Quick Start uses page_allocator and /tmp open pattern | README.md:58-61 | [#130](https://gitlab.com/devnw/zig/wal/-/issues/130) | Closed |
+| 3 | QA-0062 | 36 | Medium | Documentation | Confirmed | README missing durability configuration documentation (sync options) | README.md | [#131](https://gitlab.com/devnw/zig/wal/-/issues/131) | Closed |
+| 4 | QA-0063 | 36 | Medium | Documentation | Confirmed | README missing crash recovery behavior documentation | README.md | [#132](https://gitlab.com/devnw/zig/wal/-/issues/132) | Closed |
+| 5 | QA-0064 | 32 | Medium | Documentation | Confirmed | README missing encryption key rotation requirement documentation | README.md | [#133](https://gitlab.com/devnw/zig/wal/-/issues/133) | Closed |
+| 6 | QA-0065 | 32 | Medium | CI/CD | Confirmed | Makefile test-all-optimizations omits Debug optimization level | Makefile:73-78 | [#134](https://gitlab.com/devnw/zig/wal/-/issues/134) | Closed |
+| 7 | QA-0066 | 8 | Low | Readability | Confirmed | Encryption offset constants not derived from field sizes | encryption.zig:65-69 | [#135](https://gitlab.com/devnw/zig/wal/-/issues/135) | Closed |
+
+### Review 5 Resolution Summary
+
+7 findings: all 7 implemented and closed.
+
+**Implemented:**
+- **QA-0060**: Added 4 Makefile targets (`test-fuzz`, `test-debug`, `security-scan`, `release`) for CI parity
+- **QA-0061**: Replaced `page_allocator` with `GeneralPurposeAllocator` and `/tmp` with `"data"` dir in README Quick Start
+- **QA-0062**: Added "Durability Configuration" section to README documenting `sync_every_n` and `manual_sync`
+- **QA-0063**: Added "Crash Recovery" section to README documenting automatic recovery on init, CRC validation, truncation, LSN monotonicity
+- **QA-0064**: Added "Key Management" section to README documenting single-key constraint, rotation procedure, zeroization
+- **QA-0065**: Added `test-debug` target as first step in `test-all-optimizations` (all 4 optimization levels)
+- **QA-0066**: Replaced hardcoded `OFF_*` constants with expressions derived from field sizes + `comptime` assertion
+
+### Review 5 Methodology
+
+**Automated checks:** `zig build test` (79 pass), `zig build test-integration` (25 pass), `zig fmt --check` (clean), `zig build check` (clean).
+
+**Manual review:** Four parallel analysis agents covering readability/naming, CI/CD/build, test quality/documentation, and performance/memory. All findings cross-referenced against existing 59 issues (QA-0001–QA-0059) to avoid duplicates.
+
+**Triaged during this review:**
+- appendBatch encrypted buffer overlap (performance agent): Same false positive as SEC Reviews 2, 7, 12, 13 — already in Triaged False Positives section
+- Recovery/compaction unbuffered I/O (performance agent): Evaluated and rejected in PERF Review 5 — infrequent operations, not worth buffering complexity
+- Entry.deinit() on skipped iterator records (test agent): Skipped entries never reach caller; freeing an empty slice is a no-op
+- Poison state persistence across instances (test agent): Poisoned is per-instance by design; covered by QA-0017
+- build.zig.zon missing paths (CI agent): Intentional — `.paths` controls package distribution, not local development
 
 ## Stack-Ranked Findings (Review 4 — Closed)
 

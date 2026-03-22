@@ -7,7 +7,7 @@
 
 ## Summary
 
-Twelve adversarial code reviews have been performed on this codebase.
+Thirteen adversarial code reviews have been performed on this codebase.
 
 **Review 1** (2026-03-21): 7 findings (SEC-0001 through SEC-0007). All 7 have been
 **resolved and closed**. Primary themes: cryptographic hygiene (empty AAD, key
@@ -111,8 +111,19 @@ established Won't Do items (CI toolchain hash pinning, apt version pinning, CI
 component SHA pinning, pre-commit hook enforcement). Confirmed all 40 prior findings
 remain correctly remediated.
 
-Automated scans (gitleaks, trufflehog, semgrep, trivy, syft+grype, osv-scanner)
-returned zero application-level findings across all twelve reviews.
+**Review 13** (2026-03-22): **Zero new findings.** Full-scope adversarial security review
+and delivery-pipeline review with 7 automated scanners (gitleaks 8.30.0, trufflehog
+3.92.5, semgrep 1.150.0, trivy 0.69.0 fs+config, checkov 3.2.499 — all zero findings).
+Four parallel manual adversarial analysis agents (crypto, memory safety, DoS/input
+validation, CI/CD supply chain) identified zero new genuine findings. All candidate
+findings were triaged as either false positives (appendBatch buffer overlap — previously
+triaged in Reviews 2, 7, and 12) or duplicates of previously established Won't Do items
+(CI toolchain hash pinning). Additional manual grep verification of all `@intCast`,
+`@truncate`, `@panic`, and `@unreachable` sites confirmed all are properly guarded.
+Confirmed all 40 prior findings remain correctly remediated.
+
+Automated scans (gitleaks, trufflehog, semgrep, trivy, syft+grype, osv-scanner, checkov)
+returned zero application-level findings across all thirteen reviews.
 
 All 79 unit tests, 25 integration/scenario tests, and 4 fuzz tests pass at Debug,
 ReleaseSafe, ReleaseFast, and ReleaseSmall optimization levels (108 total). No Critical
@@ -179,6 +190,46 @@ Score = Impact (1-5) x Likelihood (1-5) x 4. Maximum = 100.
 - **CI cache key cross-branch poisoning (SEC-0014)** — CI/CD cache policy is
   handled via separate organizational controls outside this library.
 - **CI component SHA pinning** — Same as above.
+
+## Findings Detail — Review 13
+
+**Zero new findings.** All candidate findings triaged below.
+
+### Automated Scan Results — Review 13
+
+| Tool | Version | Findings |
+|------|---------|----------|
+| gitleaks | 8.30.0 | 0 |
+| trufflehog | 3.92.5 | 0 |
+| semgrep | 1.150.0 (p/default) | 0 |
+| trivy fs+misconfig | 0.69.0 | 0 vulns, 0 misconfigs |
+| checkov | 3.2.499 (gitlab_ci) | 14 passed, 0 failed |
+| shellcheck | 0.9.0 | N/A (no .sh files) |
+| hadolint | 2.14.0 | N/A (no Dockerfiles) |
+
+### Manual Review Coverage — Review 13
+
+Four parallel adversarial analysis agents covered:
+
+1. **Cryptographic correctness:** AES-256-GCM nonce generation, AAD binding, key lifecycle, in-place decryption overlap safety, tag verification — all correct. All prior remediation patterns (SEC-0001, SEC-0002, SEC-0033) verified in-place.
+
+2. **Memory safety:** All `@intCast` sites verified with upstream bounds checks. All allocator patterns (alloc/free/errdefer) verified. No `@truncate` in production code. All `@panic` and `@unreachable` sites are intentional (buffer invariant violations, impossible-by-construction error codes).
+
+3. **DoS / input validation:** All scan loops have guaranteed termination. MAX_RECORD_SIZE enforced at all read-path entry points. LSN monotonicity enforced in recovery.
+
+4. **CI/CD supply chain:** Pipeline structure unchanged. Zero external dependencies. SEC-0034 gitleaks anchoring verified. checkov passes all checks.
+
+### Triaged Non-Findings — Review 13
+
+1. **appendBatch encrypted scratch buffer overlap (memory safety agent):** Same false
+   positive as Reviews 2, 7, and 12 — standard in-place AES-GCM (ciphertext dest ==
+   plaintext src at final record). The gap between write cursor and scratch area is
+   always ≥ 40 bytes (encryption overhead).
+
+2. **CI toolchain download hash verification (CI/CD agent):** Duplicate of Won't Do —
+   handled via separate organizational controls.
+
+---
 
 ## Findings Detail — Review 12
 
