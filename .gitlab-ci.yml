@@ -20,7 +20,7 @@ include:
   - component: gitlab.com/devnw/ci-catalog/release-semantic@v1.7.1
 
 variables:
-  ZIG_VERSION: "0.15.1"
+  ZIG_VERSION: "0.15.2"
 
 stages:
   - lint
@@ -35,13 +35,13 @@ stages:
 # apt-get is only invoked when the Zig binary is not cached (QA-0009).
 .install-zig: &install-zig
   - |
-    if [ ! -f "zig-linux-x86_64-${ZIG_VERSION}/zig" ]; then
+    if [ ! -f "zig-x86_64-linux-${ZIG_VERSION}/zig" ]; then
       command -v curl >/dev/null 2>&1 || { apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates; }
-      curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+      curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
       tar -xf zig.tar.xz
       rm zig.tar.xz
     fi
-  - export PATH="$PWD/zig-linux-x86_64-${ZIG_VERSION}:$PATH"
+  - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
   - zig version
 
 # Cache the Zig toolchain and build artifacts across pipeline runs (PERF-0022).
@@ -49,7 +49,7 @@ stages:
   cache:
     key: "zig-${ZIG_VERSION}"
     paths:
-      - zig-linux-x86_64-${ZIG_VERSION}/
+      - zig-x86_64-linux-${ZIG_VERSION}/
       - .zig-cache/
 
 # Build job
