@@ -67,7 +67,7 @@ repos:
         language: system
         files: \.zig$
         pass_filenames: false
-        args: [src/, tests/, build.zig]
+        args: [src/, tests/, bench/, examples/, build.zig]
 
       - id: zig-build
         name: zig build (check)

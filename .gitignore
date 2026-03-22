@@ -48,3 +48,12 @@ coverage/
 *.gcov
 *.gcda
 *.gcno
+
+# Secrets / credentials (SEC-0010)
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.secret

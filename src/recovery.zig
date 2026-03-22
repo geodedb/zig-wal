@@ -22,17 +22,21 @@
 //! ```
 
 const std = @import("std");
-const Crc32IsoHdlc = std.hash.crc.Crc32IsoHdlc;
 const record = @import("record.zig");
 const encryption = @import("encryption.zig");
+
+// Guard: plaintext path reinterprets peek buffer as header (QA-0035).
+comptime {
+    std.debug.assert(encryption.DETECT_PEEK_SIZE == record.HEADER_SIZE);
+}
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/// Stack buffer threshold for recovery payload reads: payloads at or below
-/// this size are read into a stack buffer to avoid heap allocation.
-const STACK_READ_THRESHOLD: usize = 64 * 1024;
+/// Stack buffer threshold for recovery payload reads (QA-0022: unified with
+/// record.STACK_WRITE_THRESHOLD — both are 64 KiB for consistent stack usage).
+const STACK_READ_THRESHOLD: usize = record.STACK_WRITE_THRESHOLD;
 
 // ============================================================================
 // Types
@@ -95,44 +99,31 @@ pub fn recoverWithKey(
         .record_count = 0,
     };
 
+    // Reusable buffer for encrypted record reads — avoids per-record
+    // allocation churn during scan (PERF-0016).
+    var reuse_buf: ?[]u8 = null;
+    defer if (reuse_buf) |buf| {
+        encryption.secureZero(buf); // SEC-0029
+        allocator.free(buf);
+    };
+
     while (true) {
         // ── Peek: detect encrypted vs plaintext ──────────────────────────────
-        // Read the first 12 bytes to decide which parsing path to take.
-        // For encrypted records bytes [4..12] contain the MAGIC.
-        // For plaintext records this is the standard header.
-        var peek_buf: [12]u8 = undefined;
+        // Read DETECT_PEEK_SIZE bytes (blob_len + magic) to decide which
+        // parsing path to take (QA-0014).
+        var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
         const peek_n = try file.readAll(&peek_buf);
-        if (peek_n < 12) {
+        if (peek_n < encryption.DETECT_PEEK_SIZE) {
             // EOF or torn write — stop scanning.
             break;
         }
 
         if (key != null and encryption.isEncrypted(&peek_buf)) {
-            // ── Encrypted record path ───────────────────────────────────────
-            // The first 4 bytes we just read are blob_len (u32 LE).
-            const blob_len = std.mem.readInt(u32, peek_buf[0..4], .little);
-            const total_on_disk = @as(u64, encryption.BLOB_LEN_SIZE) + @as(u64, blob_len);
-
-            // We already consumed 12 bytes of the blob via peek; the remaining
-            // bytes are (total_on_disk - 12).
-            if (total_on_disk < 12) break; // corrupt blob_len
-            const remaining = total_on_disk - 12;
-
-            // Allocate a contiguous buffer for the full encrypted blob.
-            const blob_buf = try allocator.alloc(u8, @intCast(total_on_disk));
-            defer allocator.free(blob_buf);
-
-            // Copy the 12 bytes we already read into the front.
-            @memcpy(blob_buf[0..12], &peek_buf);
-
-            // Read the rest from disk.
-            if (remaining > 0) {
-                const rest_n = try file.readAll(blob_buf[12..]);
-                if (rest_n < @as(usize, @intCast(remaining))) break; // torn write
-            }
+            // ── Encrypted record path (QA-0002: shared reader, PERF-0016: reuse buffer) ──
+            const blob_result = try encryption.readEncryptedBlobReuse(allocator, file, &peek_buf, &reuse_buf) orelse break;
 
             // Decrypt in-place to get the inner plaintext record bytes (PERF-0003).
-            const plaintext = encryption.decryptRecordInPlace(key.?, blob_buf) catch {
+            const plaintext = encryption.decryptRecordInPlace(key.?, blob_result.blob) catch {
                 break; // decryption failure — treat as end-of-valid-log
             };
 
@@ -142,17 +133,27 @@ pub fn recoverWithKey(
             };
 
             // ── Valid encrypted record — update scan state ─────────────────
+            // Reject non-monotonic LSNs as corruption (SEC-0022).
+            if (info.record_count > 0 and rec.lsn <= info.last_lsn) break;
             info.last_lsn = rec.lsn;
             info.record_count += 1;
-            info.valid_end += total_on_disk;
+            info.valid_end += blob_result.total_on_disk;
+        } else if (key != null) {
+            // SEC-0038: encryption key is configured but record lacks magic
+            // bytes — reject to prevent plaintext record injection into an
+            // encrypted WAL. Stop scanning; treat as end-of-valid-log.
+            break;
         } else {
-            // ── Plaintext record path (unchanged logic) ─────────────────────
+            // ── Plaintext record path (no encryption key) ───────────────────
             // The 12 bytes we just read are the standard header.
             const header_buf: [record.HEADER_SIZE]u8 = peek_buf;
 
             const lsn = std.mem.readInt(u64, header_buf[0..8], .little);
             const payload_len = std.mem.readInt(u32, header_buf[8..12], .little);
             const tail_len = @as(usize, payload_len) + record.CRC_SIZE;
+
+            // Reject unreasonably large records to prevent OOM (SEC-0004).
+            if (record.HEADER_SIZE + tail_len > record.MAX_RECORD_SIZE) break;
 
             if (tail_len <= STACK_READ_THRESHOLD + record.CRC_SIZE) {
                 var stack_buf: [STACK_READ_THRESHOLD + record.CRC_SIZE]u8 = undefined;
@@ -161,7 +162,7 @@ pub fn recoverWithKey(
                 const n = try file.readAll(tail);
                 if (n < tail_len) break;
 
-                if (!verifyCrc(header_buf, tail[0..payload_len], tail[payload_len..])) break;
+                if (!record.verifyCrc(header_buf, tail[0..payload_len], tail[payload_len..])) break;
             } else {
                 const heap_buf = try allocator.alloc(u8, tail_len);
                 defer allocator.free(heap_buf);
@@ -171,37 +172,25 @@ pub fn recoverWithKey(
 
                 const payload_slice = heap_buf[0..payload_len];
                 const crc_slice = heap_buf[payload_len..];
-                if (!verifyCrc(header_buf, payload_slice, crc_slice)) break;
+                if (!record.verifyCrc(header_buf, payload_slice, crc_slice)) break;
             }
 
+            // Reject non-monotonic LSNs as corruption (SEC-0022).
+            if (info.record_count > 0 and lsn <= info.last_lsn) break;
             info.last_lsn = lsn;
             info.record_count += 1;
             info.valid_end += @as(u64, record.HEADER_SIZE) + @as(u64, payload_len) + @as(u64, record.CRC_SIZE);
         }
     }
 
+    // Explicitly position file at valid_end so callers can rely on the
+    // documented guarantee without depending on scan-loop internals (QA-0027).
+    try file.seekTo(info.valid_end);
+
     return info;
 }
 
-// ============================================================================
-// Internal helpers
-// ============================================================================
-
-/// Verify the CRC32 of a record given its raw header bytes, payload bytes,
-/// and the 4-byte stored CRC slice. Returns `true` if the CRC matches.
-inline fn verifyCrc(
-    header_buf: [record.HEADER_SIZE]u8,
-    payload: []const u8,
-    crc_bytes: []const u8,
-) bool {
-    std.debug.assert(crc_bytes.len >= record.CRC_SIZE);
-    const stored_crc = std.mem.readInt(u32, crc_bytes[0..4], .little);
-    var h = Crc32IsoHdlc.init();
-    h.update(&header_buf);
-    h.update(payload);
-    const computed_crc = h.final();
-    return stored_crc == computed_crc;
-}
+// verifyCrc moved to record.zig (QA-0015) — use record.verifyCrc.
 
 // ============================================================================
 // Tests
@@ -233,7 +222,7 @@ test "recover: single valid record" {
     defer file.close();
 
     const payload = "hello, WAL!";
-    const bytes_written = try record.writeToFile(file, allocator, 1, payload);
+    const bytes_written = try record.writeToFile(allocator, file, 1, payload);
 
     const info = try recover(allocator, file);
 
@@ -252,9 +241,9 @@ test "recover: multiple records" {
     defer file.close();
 
     var total_bytes: u64 = 0;
-    total_bytes += try record.writeToFile(file, allocator, 1, "alpha");
-    total_bytes += try record.writeToFile(file, allocator, 2, "beta");
-    total_bytes += try record.writeToFile(file, allocator, 3, "gamma");
+    total_bytes += try record.writeToFile(allocator, file, 1, "alpha");
+    total_bytes += try record.writeToFile(allocator, file, 2, "beta");
+    total_bytes += try record.writeToFile(allocator, file, 3, "gamma");
 
     const info = try recover(allocator, file);
 
@@ -274,7 +263,7 @@ test "recover: torn write — incomplete header" {
 
     // Write one valid record, then append only 6 bytes of what would be a
     // second header (incomplete — the header is 12 bytes).
-    const bytes_written = try record.writeToFile(file, allocator, 1, "good");
+    const bytes_written = try record.writeToFile(allocator, file, 1, "good");
     try file.writeAll(&[_]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 }); // partial header
 
     const info = try recover(allocator, file);
@@ -295,7 +284,7 @@ test "recover: torn write — valid record then incomplete payload" {
     defer file.close();
 
     // Write one valid record.
-    const bytes_written = try record.writeToFile(file, allocator, 1, "good");
+    const bytes_written = try record.writeToFile(allocator, file, 1, "good");
 
     // Write a complete header for a second record (claiming 10 bytes of
     // payload), but provide only 4 bytes of that payload — torn write.
@@ -323,7 +312,7 @@ test "recover: corrupt CRC stops scan" {
     defer file.close();
 
     // Write one valid record.
-    const bytes_written = try record.writeToFile(file, allocator, 1, "good");
+    const bytes_written = try record.writeToFile(allocator, file, 1, "good");
 
     // Serialize a second record, corrupt its CRC, then write it.
     const payload = "corrupt";
@@ -343,4 +332,309 @@ test "recover: corrupt CRC stops scan" {
     try std.testing.expectEqual(@as(u64, 1), info.last_lsn);
     try std.testing.expectEqual(bytes_written, info.valid_end);
     try std.testing.expectEqual(@as(u64, 1), info.record_count);
+}
+
+test "recover: non-monotonic LSN stops scan (SEC-0022)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    // Write 3 records with monotonic LSNs: 1, 2, 3.
+    const first_size = try record.writeToFile(allocator, file, 1, "one");
+    const second_size = try record.writeToFile(allocator, file, 2, "two");
+    _ = second_size;
+    _ = try record.writeToFile(allocator, file, 3, "three");
+
+    // Overwrite the second record's LSN with 1 (non-monotonic: 1 <= 1).
+    // Seek to the start of the second record and write LSN=1.
+    try file.seekTo(first_size);
+    var lsn_buf: [8]u8 = undefined;
+    std.mem.writeInt(u64, &lsn_buf, 1, .little);
+    try file.writeAll(&lsn_buf);
+
+    // Now rewrite the CRC of the second record so it's valid for the modified LSN.
+    // Read the full modified second record, recompute CRC, and write it back.
+    try file.seekTo(first_size);
+    const payload_str = "two";
+    const rec_size = record.HEADER_SIZE + payload_str.len + record.CRC_SIZE;
+    var rec_buf: [record.HEADER_SIZE + 3 + record.CRC_SIZE]u8 = undefined;
+    const n = try file.readAll(rec_buf[0..rec_size]);
+    if (n < rec_size) return error.Unexpected;
+
+    // Recompute CRC over header + payload.
+    const crc = std.hash.crc.Crc32IsoHdlc.hash(rec_buf[0 .. record.HEADER_SIZE + payload_str.len]);
+    std.mem.writeInt(u32, rec_buf[record.HEADER_SIZE + payload_str.len ..][0..4], crc, .little);
+
+    // Write the fixed record back.
+    try file.seekTo(first_size);
+    try file.writeAll(rec_buf[0..rec_size]);
+
+    // Recovery should stop at the non-monotonic record (LSN 1 <= 1).
+    const info = try recover(allocator, file);
+
+    try std.testing.expectEqual(@as(u64, 1), info.last_lsn);
+    try std.testing.expectEqual(@as(u64, first_size), info.valid_end);
+    try std.testing.expectEqual(@as(u64, 1), info.record_count);
+}
+
+test "recover: oversized payload_len stops scan (SEC-0004/QA-0024)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    // Write one valid record.
+    const bytes_written = try record.writeToFile(allocator, file, 1, "good");
+
+    // Write a crafted header claiming a payload larger than MAX_RECORD_SIZE.
+    var bad_header: [record.HEADER_SIZE]u8 = undefined;
+    std.mem.writeInt(u64, bad_header[0..8], 2, .little); // LSN 2
+    // payload_len that makes total > MAX_RECORD_SIZE:
+    // MAX_RECORD_SIZE = 16 * 1024 * 1024, minus HEADER_SIZE(12) minus CRC_SIZE(4) + 1
+    const huge_len: u32 = @intCast(record.MAX_RECORD_SIZE - record.HEADER_SIZE - record.CRC_SIZE + 1);
+    std.mem.writeInt(u32, bad_header[8..12], huge_len, .little);
+    try file.writeAll(&bad_header);
+
+    const info = try recover(allocator, file);
+
+    // Only the first record is valid; the oversized one is rejected.
+    try std.testing.expectEqual(@as(u64, 1), info.last_lsn);
+    try std.testing.expectEqual(@as(u64, bytes_written), info.valid_end);
+    try std.testing.expectEqual(@as(u64, 1), info.record_count);
+}
+
+// ============================================================================
+// Encrypted recovery tests (QA-0018)
+// ============================================================================
+
+/// Deterministic test key for encrypted recovery tests.
+const test_key = encryption.test_key;
+
+test "recoverWithKey: empty file returns zero state (QA-0018)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    const key = test_key;
+    const info = try recoverWithKey(allocator, file, &key);
+
+    try std.testing.expectEqual(@as(u64, 0), info.last_lsn);
+    try std.testing.expectEqual(@as(u64, 0), info.valid_end);
+    try std.testing.expectEqual(@as(u64, 0), info.record_count);
+}
+
+test "recoverWithKey: single encrypted record (QA-0018)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    const key = test_key;
+    const bytes_written = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "hello encrypted");
+
+    const info = try recoverWithKey(allocator, file, &key);
+
+    try std.testing.expectEqual(@as(u64, 1), info.last_lsn);
+    try std.testing.expectEqual(@as(u64, bytes_written), info.valid_end);
+    try std.testing.expectEqual(@as(u64, 1), info.record_count);
+}
+
+test "recoverWithKey: multiple encrypted records (QA-0018)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    const key = test_key;
+    var total_bytes: u64 = 0;
+    total_bytes += try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "alpha");
+    total_bytes += try encryption.encryptAndWriteToFile(allocator, file, &key, 2, "beta");
+    total_bytes += try encryption.encryptAndWriteToFile(allocator, file, &key, 3, "gamma");
+
+    const info = try recoverWithKey(allocator, file, &key);
+
+    try std.testing.expectEqual(@as(u64, 3), info.last_lsn);
+    try std.testing.expectEqual(total_bytes, info.valid_end);
+    try std.testing.expectEqual(@as(u64, 3), info.record_count);
+}
+
+test "recoverWithKey: torn write — incomplete header (QA-0018)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    const key = test_key;
+    // Write one valid encrypted record, then append only 6 bytes of what
+    // would be a second record (incomplete — the peek/header is 12 bytes).
+    const bytes_written = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "good");
+    try file.writeAll(&[_]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 }); // partial header
+
+    const info = try recoverWithKey(allocator, file, &key);
+
+    // Only the first record is valid; the incomplete header is torn.
+    try std.testing.expectEqual(@as(u64, 1), info.last_lsn);
+    try std.testing.expectEqual(@as(u64, bytes_written), info.valid_end);
+    try std.testing.expectEqual(@as(u64, 1), info.record_count);
+}
+
+test "recoverWithKey: torn write — valid record then incomplete payload (QA-0018)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    const key = test_key;
+    // Write one valid encrypted record.
+    const bytes_written = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "good");
+
+    // Write a fake encrypted record header that claims a large blob_len but
+    // only provide a few bytes of data — simulating a torn write mid-record.
+    var torn_header: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
+    // blob_len = 100 (claiming 100 bytes of content after blob_len field)
+    std.mem.writeInt(u32, torn_header[0..4], 100, .little);
+    // Write the encryption magic so it's recognised as an encrypted record.
+    @memcpy(torn_header[4..12], &encryption.MAGIC);
+    try file.writeAll(&torn_header);
+    // Only 4 bytes of the remaining 100 — torn write.
+    try file.writeAll(&[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF });
+
+    const info = try recoverWithKey(allocator, file, &key);
+
+    // Only the first record is valid.
+    try std.testing.expectEqual(@as(u64, 1), info.last_lsn);
+    try std.testing.expectEqual(@as(u64, bytes_written), info.valid_end);
+    try std.testing.expectEqual(@as(u64, 1), info.record_count);
+}
+
+test "recoverWithKey: decryption failure stops scan (QA-0018)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    const key = test_key;
+    // Write one valid encrypted record.
+    const bytes_written = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "good");
+
+    // Write garbage bytes that look like an encrypted record (valid blob_len
+    // and magic) but contain random ciphertext that will fail decryption.
+    const garbage_payload_len = 20;
+    const garbage_blob_len: u32 = @intCast(encryption.MAGIC_SIZE + encryption.NONCE_SIZE + encryption.TAG_SIZE + garbage_payload_len);
+    var garbage: [encryption.BLOB_LEN_SIZE + encryption.MAGIC_SIZE + encryption.NONCE_SIZE + encryption.TAG_SIZE + garbage_payload_len]u8 = undefined;
+    // Fill with deterministic garbage.
+    for (&garbage, 0..) |*b, i| {
+        b.* = @intCast(i % 256);
+    }
+    // Set valid blob_len and magic so isEncrypted returns true.
+    std.mem.writeInt(u32, garbage[0..4], garbage_blob_len, .little);
+    @memcpy(garbage[4..12], &encryption.MAGIC);
+    try file.writeAll(&garbage);
+
+    const info = try recoverWithKey(allocator, file, &key);
+
+    // Only the first record is valid; the second fails decryption.
+    try std.testing.expectEqual(@as(u64, 1), info.last_lsn);
+    try std.testing.expectEqual(@as(u64, bytes_written), info.valid_end);
+    try std.testing.expectEqual(@as(u64, 1), info.record_count);
+}
+
+test "recoverWithKey: non-monotonic LSN stops scan (SEC-0022, QA-0018)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    const key = test_key;
+    // Write two encrypted records with monotonic LSNs: 1, 2.
+    const first_size = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "one");
+    const second_size = try encryption.encryptAndWriteToFile(allocator, file, &key, 2, "two");
+
+    // Write a third encrypted record with LSN 1 (non-monotonic: 1 <= 2).
+    // encryptAndWriteToFile embeds the LSN inside the encrypted payload,
+    // so recovery will decrypt and find the regressed LSN.
+    _ = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "regression");
+
+    const info = try recoverWithKey(allocator, file, &key);
+
+    // Recovery should accept records 1 and 2, then stop at the third
+    // because LSN 1 <= 2.
+    try std.testing.expectEqual(@as(u64, 2), info.last_lsn);
+    try std.testing.expectEqual(@as(u64, first_size + second_size), info.valid_end);
+    try std.testing.expectEqual(@as(u64, 2), info.record_count);
+}
+
+test "recoverWithKey: plaintext records rejected when key is present (SEC-0038)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    // Write plaintext records (no encryption).
+    _ = try record.writeToFile(allocator, file, 1, "plain-1");
+    _ = try record.writeToFile(allocator, file, 2, "plain-2");
+
+    // Recover with an encryption key — should reject all plaintext records.
+    const key = test_key;
+    const info = try recoverWithKey(allocator, file, &key);
+
+    try std.testing.expectEqual(@as(u64, 0), info.last_lsn);
+    try std.testing.expectEqual(@as(u64, 0), info.valid_end);
+    try std.testing.expectEqual(@as(u64, 0), info.record_count);
+}
+
+test "recoverWithKey: encrypted then plaintext stops at boundary (SEC-0038)" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
+    defer file.close();
+
+    const key = test_key;
+
+    // Write 2 encrypted records, then 1 plaintext record.
+    const enc1 = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "enc-1");
+    const enc2 = try encryption.encryptAndWriteToFile(allocator, file, &key, 2, "enc-2");
+    _ = try record.writeToFile(allocator, file, 3, "plain-3");
+
+    // Recovery should accept the 2 encrypted records, then stop at the
+    // plaintext record because the key is present.
+    const info = try recoverWithKey(allocator, file, &key);
+
+    try std.testing.expectEqual(@as(u64, 2), info.last_lsn);
+    try std.testing.expectEqual(@as(u64, enc1 + enc2), info.valid_end);
+    try std.testing.expectEqual(@as(u64, 2), info.record_count);
 }

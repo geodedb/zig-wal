@@ -8,6 +8,10 @@
 
 const std = @import("std");
 
+/// Maximum buffer size for deriving temporary filenames ("{filename}.tmp").
+/// Shared by atomic.zig and compaction.zig (QA-0056).
+pub const TMP_NAME_BUF_SIZE = 256;
+
 /// Atomically writes `data` to `filename` within `dir`.
 ///
 /// The write is performed by:
@@ -29,10 +33,15 @@ const std = @import("std");
 /// Returns `error.FilenameTooLong` if `filename` is too long to derive a
 /// temp name from (limit: 251 bytes for the base name).
 pub fn atomicWriteFile(dir: std.fs.Dir, filename: []const u8, data: []const u8) !void {
-    var tmp_name_buf: [256]u8 = undefined;
+    var tmp_name_buf: [TMP_NAME_BUF_SIZE]u8 = undefined;
     const tmp_name = std.fmt.bufPrint(&tmp_name_buf, "{s}.tmp", .{filename}) catch return error.FilenameTooLong;
 
-    var tmp_file = try dir.createFile(tmp_name, .{ .truncate = true });
+    // Remove any pre-existing temp file to prevent symlink attacks (SEC-0005).
+    // Note: A narrow TOCTOU window exists between delete and create. A fully
+    // race-free solution would require O_TMPFILE+linkat (Linux-specific),
+    // which is not available in Zig's std.fs API (SEC-0011).
+    dir.deleteFile(tmp_name) catch {};
+    var tmp_file = try dir.createFile(tmp_name, .{ .truncate = true, .mode = 0o600 });
     errdefer {
         tmp_file.close();
         dir.deleteFile(tmp_name) catch {};
@@ -40,9 +49,21 @@ pub fn atomicWriteFile(dir: std.fs.Dir, filename: []const u8, data: []const u8) 
 
     try tmp_file.writeAll(data);
     try tmp_file.sync();
-    tmp_file.close();
-
+    // Rename before close: if rename() fails the fd is still open and the
+    // caller's errdefer can close it safely. Closing first would make the
+    // errdefer double-close a stale fd → Zig's std.posix.close treats EBADF
+    // as unreachable (UB in ReleaseFast/ReleaseSmall, panic otherwise).
+    // SEC-0035.
     try dir.rename(tmp_name, filename);
+    tmp_file.close();
+    // Note: A directory fsync after rename would make the directory entry fully
+    // durable on all filesystems. However, Zig's std.fs.Dir opens directories
+    // with O_PATH, which does not support fsync. Opening a separate read-only
+    // fd for the directory is not possible without knowing the directory's
+    // absolute path (which the caller does not provide). On ext4 with the
+    // default data=ordered mode, directory renames are journaled and durable
+    // without an explicit fsync. On data=writeback or non-journaling
+    // filesystems, a narrow durability gap exists (SEC-0020).
 }
 
 // ============================================================================

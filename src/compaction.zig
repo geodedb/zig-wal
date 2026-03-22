@@ -23,6 +23,12 @@
 const std = @import("std");
 const record = @import("record.zig");
 const encryption = @import("encryption.zig");
+const atomic = @import("atomic.zig");
+
+// Guard: plaintext path reinterprets peek buffer as header (QA-0035).
+comptime {
+    std.debug.assert(encryption.DETECT_PEEK_SIZE == record.HEADER_SIZE);
+}
 
 // ============================================================================
 // Constants
@@ -45,6 +51,29 @@ pub const CompactResult = struct {
 };
 
 // ============================================================================
+// Temp file helpers (QA-0028: deduplicated from two call sites in compact)
+// ============================================================================
+
+/// Create a temporary file, removing any stale one first (SEC-0005).
+/// The caller must set up an errdefer for close+delete on the returned handle.
+fn createTempFile(dir: std.fs.Dir, tmp_name: []const u8) !std.fs.File {
+    // Note: A narrow TOCTOU window exists between delete and create (SEC-0011).
+    dir.deleteFile(tmp_name) catch {};
+    return dir.createFile(tmp_name, .{ .truncate = true, .mode = 0o600 });
+}
+
+/// Sync, close, and atomically rename a temporary file over the target.
+/// Close is deferred until after rename so that a rename failure does not
+/// leave the fd closed — the caller's errdefer can still safely close it
+/// (SEC-0035: avoids double-close → unreachable/UB on EBADF).
+fn finalizeTempFile(dir: std.fs.Dir, tmp: std.fs.File, tmp_name: []const u8, filename: []const u8) !void {
+    try tmp.sync();
+    try dir.rename(tmp_name, filename);
+    tmp.close();
+    // Directory fsync omitted — see SEC-0020 comment in atomic.zig.
+}
+
+// ============================================================================
 // Public API
 // ============================================================================
 
@@ -62,8 +91,14 @@ pub const CompactResult = struct {
 /// are already above the watermark the file is left untouched and a
 /// `CompactResult` reflecting the current state is returned.
 ///
-/// No CRC validation is performed during scanning — it is assumed that
-/// `recovery.recover` has already validated every record on startup.
+/// **CRC validation is intentionally skipped during scanning (SEC-0027).**
+/// The recovery module (`recovery.recover` / `recoverWithKey`) validates
+/// every record's CRC on WAL open and truncates the file at the first
+/// invalid record. Compaction only runs after recovery, so all records
+/// in the file are known-good. Re-validating CRCs here would double the
+/// I/O cost without security benefit. Encrypted records still get
+/// implicit integrity verification via the AES-GCM authentication tag
+/// during decryption in the scan phase.
 pub fn compact(
     allocator: std.mem.Allocator,
     dir: std.fs.Dir,
@@ -72,7 +107,7 @@ pub fn compact(
     encryption_key: ?*const [32]u8,
 ) !CompactResult {
     // Derive the temporary filename from the target filename.
-    var tmp_name_buf: [256]u8 = undefined;
+    var tmp_name_buf: [atomic.TMP_NAME_BUF_SIZE]u8 = undefined;
     const tmp_name = std.fmt.bufPrint(&tmp_name_buf, "{s}.tmp", .{filename}) catch return error.FilenameTooLong;
 
     // Open source file for reading.
@@ -81,41 +116,36 @@ pub fn compact(
 
     // ---- Scan phase ---------------------------------------------------------
     // Walk every record, tracking the offset of the first kept record.
-    // Peek at the first 12 bytes to distinguish encrypted from plaintext records.
+    // Peek at DETECT_PEEK_SIZE bytes to distinguish encrypted from plaintext records (QA-0014).
 
     var first_kept_offset: ?u64 = null;
     var records_kept: u64 = 0;
+    // Track file offset manually instead of getPos() syscall per record (PERF-0018).
+    var current_offset: u64 = 0;
+
+    // Reusable buffer for encrypted record reads (PERF-0016).
+    var reuse_buf: ?[]u8 = null;
+    defer if (reuse_buf) |buf| {
+        encryption.secureZero(buf); // SEC-0029
+        allocator.free(buf);
+    };
 
     while (true) {
-        const offset = try src.getPos();
+        const offset = current_offset;
 
-        // Read 12 bytes to detect the record type.
-        var peek_buf: [12]u8 = undefined;
+        // Read DETECT_PEEK_SIZE bytes to detect the record type.
+        var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
         const peek_n = try src.readAll(&peek_buf);
-        if (peek_n < 12) break; // EOF or torn header
+        if (peek_n < encryption.DETECT_PEEK_SIZE) break; // EOF or torn header
 
         if (encryption_key != null and encryption.isEncrypted(&peek_buf)) {
-            // ── Encrypted record path ────────────────────────────────────────
-            // peek_buf[0..4] = blob_len (u32 LE).  Total on-disk size is
-            // BLOB_LEN_SIZE(4) + blob_len bytes.
-            const blob_len = std.mem.readInt(u32, peek_buf[0..4], .little);
-            const total_on_disk: usize = encryption.BLOB_LEN_SIZE + @as(usize, blob_len);
-
-            if (total_on_disk < 12) break; // corrupt blob_len
-
-            // Read the remaining bytes of the encrypted blob.
-            const remaining = total_on_disk - 12;
-            const blob_buf = try allocator.alloc(u8, total_on_disk);
-            defer allocator.free(blob_buf);
-            @memcpy(blob_buf[0..12], &peek_buf);
-            if (remaining > 0) {
-                const n = try src.readAll(blob_buf[12..]);
-                if (n < remaining) break; // torn write
-            }
+            // ── Encrypted record path (QA-0002: shared reader, PERF-0016: reuse buffer) ──
+            const blob_result = try encryption.readEncryptedBlobReuse(allocator, src, &peek_buf, &reuse_buf) orelse break;
+            // No per-record defer — reuse_buf freed once after the loop (PERF-0016).
 
             // Decrypt in-place to extract LSN — avoids extra allocation (PERF-0003).
             const key = encryption_key.?;
-            const plaintext = encryption.decryptRecordInPlace(key, blob_buf) catch break;
+            const plaintext = encryption.decryptRecordInPlace(key, blob_result.blob) catch break;
 
             if (plaintext.len < record.HEADER_SIZE) break; // corrupt inner record
             const lsn = std.mem.readInt(u64, plaintext[0..8], .little);
@@ -126,13 +156,21 @@ pub fn compact(
                     first_kept_offset = offset;
                 }
             }
+            current_offset += blob_result.total_on_disk;
+        } else if (encryption_key != null) {
+            // SEC-0038: encryption key is configured but record lacks magic
+            // bytes — reject to prevent plaintext record injection.
+            break;
         } else {
-            // ── Plaintext record path ────────────────────────────────────────
+            // ── Plaintext record path (no encryption key) ────────────────────
             // peek_buf contains the 12-byte header already consumed.
             const hdr = record.HeaderInfo{
                 .lsn = std.mem.readInt(u64, peek_buf[0..8], .little),
                 .payload_len = std.mem.readInt(u32, peek_buf[8..12], .little),
             };
+
+            // Reject unreasonably large records (SEC-0004).
+            if (@as(usize, hdr.payload_len) + record.HEADER_SIZE + record.CRC_SIZE > record.MAX_RECORD_SIZE) break;
 
             if (hdr.lsn > up_to_lsn) {
                 records_kept += 1;
@@ -143,6 +181,7 @@ pub fn compact(
 
             // Seek past payload + CRC without reading them.
             try src.seekBy(@as(i64, @intCast(@as(usize, hdr.payload_len) + record.CRC_SIZE)));
+            current_offset += @as(u64, record.HEADER_SIZE) + @as(u64, hdr.payload_len) + @as(u64, record.CRC_SIZE);
         }
     }
 
@@ -150,14 +189,12 @@ pub fn compact(
 
     if (first_kept_offset == null) {
         // Every record is below (or at) the watermark → empty the file.
-        const tmp = try dir.createFile(tmp_name, .{ .truncate = true });
+        const tmp = try createTempFile(dir, tmp_name);
         errdefer {
             tmp.close();
             dir.deleteFile(tmp_name) catch {};
         }
-        try tmp.sync();
-        tmp.close();
-        try dir.rename(tmp_name, filename);
+        try finalizeTempFile(dir, tmp, tmp_name, filename);
 
         return CompactResult{ .records_kept = 0, .new_size = 0 };
     }
@@ -180,7 +217,7 @@ pub fn compact(
 
     try src.seekTo(kept_offset);
 
-    const tmp = try dir.createFile(tmp_name, .{ .truncate = true });
+    const tmp = try createTempFile(dir, tmp_name);
     errdefer {
         tmp.close();
         dir.deleteFile(tmp_name) catch {};
@@ -196,9 +233,7 @@ pub fn compact(
         bytes_written += n;
     }
 
-    try tmp.sync();
-    tmp.close();
-    try dir.rename(tmp_name, filename);
+    try finalizeTempFile(dir, tmp, tmp_name, filename);
 
     return CompactResult{
         .records_kept = records_kept,
@@ -218,7 +253,7 @@ test "compact: removes records below watermark" {
     // Write 5 records with LSNs 1..5.
     const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
     for (1..6) |lsn| {
-        _ = try record.writeToFile(wf, allocator, @intCast(lsn), "payload");
+        _ = try record.writeToFile(allocator, wf, @intCast(lsn), "payload");
     }
     wf.close();
 
@@ -233,7 +268,7 @@ test "compact: removes records below watermark" {
     var expected_lsn: u64 = 4;
     while (true) {
         const hdr_result = try record.readHeaderRaw(rf) orelse break;
-        const payload = try record.readPayloadAndVerify(rf, allocator, hdr_result.info, hdr_result.raw) orelse break;
+        const payload = try record.readPayloadAndVerify(allocator, rf, hdr_result.info, hdr_result.raw) orelse break;
         defer allocator.free(payload);
 
         try std.testing.expectEqual(expected_lsn, hdr_result.info.lsn);
@@ -251,7 +286,7 @@ test "compact: all records removed" {
     // Write 3 records.
     const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
     for (1..4) |lsn| {
-        _ = try record.writeToFile(wf, allocator, @intCast(lsn), "data");
+        _ = try record.writeToFile(allocator, wf, @intCast(lsn), "data");
     }
     wf.close();
 
@@ -273,7 +308,7 @@ test "compact: no records removed" {
     // Write 3 records with LSNs 1..3.
     const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
     for (1..4) |lsn| {
-        _ = try record.writeToFile(wf, allocator, @intCast(lsn), "keep");
+        _ = try record.writeToFile(allocator, wf, @intCast(lsn), "keep");
     }
     wf.close();
 
@@ -298,7 +333,7 @@ test "compact: append after compact works" {
     // Write records LSN 1..4.
     const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
     for (1..5) |lsn| {
-        _ = try record.writeToFile(wf, allocator, @intCast(lsn), "before");
+        _ = try record.writeToFile(allocator, wf, @intCast(lsn), "before");
     }
     wf.close();
 
@@ -309,8 +344,8 @@ test "compact: append after compact works" {
     // Append two more records: LSN 5 and 6.
     const af = try tmp_dir.dir.openFile("wal.log", .{ .mode = .write_only });
     try af.seekFromEnd(0);
-    _ = try record.writeToFile(af, allocator, 5, "after");
-    _ = try record.writeToFile(af, allocator, 6, "after");
+    _ = try record.writeToFile(allocator, af, 5, "after");
+    _ = try record.writeToFile(allocator, af, 6, "after");
     af.close();
 
     // Read back all 4 records and verify.
@@ -323,7 +358,7 @@ test "compact: append after compact works" {
 
     while (true) {
         const hdr_result = try record.readHeaderRaw(rf) orelse break;
-        const payload = try record.readPayloadAndVerify(rf, allocator, hdr_result.info, hdr_result.raw) orelse break;
+        const payload = try record.readPayloadAndVerify(allocator, rf, hdr_result.info, hdr_result.raw) orelse break;
         defer allocator.free(payload);
 
         try std.testing.expectEqual(expected_lsns[idx], hdr_result.info.lsn);
@@ -331,4 +366,116 @@ test "compact: append after compact works" {
         idx += 1;
     }
     try std.testing.expectEqual(@as(usize, 4), idx);
+}
+
+test "compact: filename too long returns error" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // 253 chars + ".tmp" = 257 > 256-byte buffer in compact().
+    const long_name = "a" ** 253;
+    const result = compact(allocator, tmp_dir.dir, long_name, 0, null);
+    try std.testing.expectError(error.FilenameTooLong, result);
+}
+
+// ============================================================================
+// Encrypted compaction tests (QA-0025)
+// ============================================================================
+
+/// Deterministic test key used by all encrypted compaction tests.
+const test_key = encryption.test_key;
+
+test "compact: encrypted — removes records below watermark (QA-0025)" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const key = test_key;
+
+    // Write 5 encrypted records with LSNs 1..5.
+    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    for (1..6) |lsn| {
+        _ = try encryption.encryptAndWriteToFile(allocator, wf, &key, @intCast(lsn), "payload");
+    }
+    wf.close();
+
+    // Compact: keep only records with LSN > 3.
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, &key);
+    try std.testing.expectEqual(@as(u64, 2), result.records_kept);
+
+    // Re-open and verify only LSNs 4 and 5 remain by reading encrypted records.
+    const rf = try tmp_dir.dir.openFile("wal.log", .{ .mode = .read_only });
+    defer rf.close();
+
+    var expected_lsn: u64 = 4;
+    while (true) {
+        // Peek to detect record.
+        var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
+        const peek_n = try rf.readAll(&peek_buf);
+        if (peek_n < encryption.DETECT_PEEK_SIZE) break;
+
+        const blob_result = try encryption.readEncryptedBlob(allocator, rf, &peek_buf) orelse break;
+        defer {
+            encryption.secureZero(blob_result.blob);
+            allocator.free(blob_result.blob);
+        }
+
+        const plaintext = try encryption.decryptRecordInPlace(&key, blob_result.blob);
+        const rec = try record.deserialize(plaintext);
+        try std.testing.expectEqual(expected_lsn, rec.lsn);
+        expected_lsn += 1;
+    }
+    try std.testing.expectEqual(@as(u64, 6), expected_lsn); // saw LSNs 4 and 5
+}
+
+test "compact: encrypted — all records removed (QA-0025)" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const key = test_key;
+
+    // Write 3 encrypted records.
+    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    for (1..4) |lsn| {
+        _ = try encryption.encryptAndWriteToFile(allocator, wf, &key, @intCast(lsn), "data");
+    }
+    wf.close();
+
+    // Compact above max LSN → all records removed.
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 100, &key);
+    try std.testing.expectEqual(@as(u64, 0), result.records_kept);
+    try std.testing.expectEqual(@as(u64, 0), result.new_size);
+
+    // File should exist but be empty.
+    const stat = try tmp_dir.dir.statFile("wal.log");
+    try std.testing.expectEqual(@as(u64, 0), stat.size);
+}
+
+test "compact: encrypted — no records removed (QA-0025)" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const key = test_key;
+
+    // Write 3 encrypted records with LSNs 1..3.
+    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    for (1..4) |lsn| {
+        _ = try encryption.encryptAndWriteToFile(allocator, wf, &key, @intCast(lsn), "keep");
+    }
+    wf.close();
+
+    // Record the original file size.
+    const original_stat = try tmp_dir.dir.statFile("wal.log");
+
+    // Compact at watermark 0 → all records have LSN > 0, so all kept.
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 0, &key);
+    try std.testing.expectEqual(@as(u64, 3), result.records_kept);
+    try std.testing.expectEqual(original_stat.size, result.new_size);
+
+    // Verify file is unchanged.
+    const new_stat = try tmp_dir.dir.statFile("wal.log");
+    try std.testing.expectEqual(original_stat.size, new_stat.size);
 }

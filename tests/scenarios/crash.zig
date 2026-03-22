@@ -7,6 +7,10 @@
 const std = @import("std");
 const wal = @import("wal");
 
+// Internal/unstable modules used for crash scenario construction (QA-0053).
+const record = wal.record;
+const encryption = wal.encryption;
+
 // ============================================================================
 // Crash Tests
 // ============================================================================
@@ -77,7 +81,7 @@ test "crash: torn write mid-payload recovers previous records" {
         try f.seekFromEnd(0);
 
         // Fake header: LSN=2, payload_len=1000
-        var hdr: [wal.record.HEADER_SIZE]u8 = undefined;
+        var hdr: [record.HEADER_SIZE]u8 = undefined;
         std.mem.writeInt(u64, hdr[0..8], 2, .little);
         std.mem.writeInt(u32, hdr[8..12], 1000, .little);
         try f.writeAll(&hdr);
@@ -144,8 +148,8 @@ test "crash: corrupt CRC in middle of file, records after corruption lost" {
         const f = try tmp.dir.openFile("wal", .{ .mode = .read_write });
         defer f.close();
 
-        const record2_payload_offset: u64 = (wal.record.HEADER_SIZE + "alpha".len + wal.record.CRC_SIZE) +
-            wal.record.HEADER_SIZE;
+        const record2_payload_offset: u64 = (record.HEADER_SIZE + "alpha".len + record.CRC_SIZE) +
+            record.HEADER_SIZE;
         try f.seekTo(record2_payload_offset);
         var byte: [1]u8 = undefined;
         _ = try f.readAll(&byte);
@@ -169,6 +173,147 @@ test "crash: corrupt CRC in middle of file, records after corruption lost" {
         defer maybe_entry.?.deinit();
         try std.testing.expectEqual(@as(u64, 1), maybe_entry.?.lsn);
         try std.testing.expectEqualSlices(u8, "alpha", maybe_entry.?.payload);
+
+        try std.testing.expect((try iter.next()) == null);
+    }
+}
+
+// ============================================================================
+// Encrypted Crash Tests (QA-0039)
+// ============================================================================
+
+test "encrypted: torn write mid-header recovery" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    // Write 3 encrypted records and close.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .encryption_key = key,
+        });
+        defer log.deinit();
+
+        _ = try log.append("enc-record-1");
+        _ = try log.append("enc-record-2");
+        _ = try log.append("enc-record-3");
+        try log.sync();
+    }
+
+    // Append 6 garbage bytes directly — simulates a torn header write of a 4th record.
+    {
+        const f = try tmp.dir.openFile("wal", .{ .mode = .read_write });
+        defer f.close();
+        try f.seekFromEnd(0);
+        const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE };
+        try f.writeAll(&garbage);
+    }
+
+    // Reopen — recovery should truncate the garbage and restore LSN 3.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .encryption_key = key,
+        });
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 3), log.currentLsn());
+
+        // Iterator should return exactly 3 records.
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        const expected_payloads = [_][]const u8{ "enc-record-1", "enc-record-2", "enc-record-3" };
+        for (expected_payloads, 1..) |expected, lsn| {
+            var maybe_entry = try iter.next();
+            try std.testing.expect(maybe_entry != null);
+            defer maybe_entry.?.deinit();
+            try std.testing.expectEqual(@as(u64, lsn), maybe_entry.?.lsn);
+            try std.testing.expectEqualSlices(u8, expected, maybe_entry.?.payload);
+        }
+
+        try std.testing.expect((try iter.next()) == null);
+
+        // New appends must still work.
+        const new_lsn = try log.append("after-crash");
+        try std.testing.expectEqual(@as(u64, 4), new_lsn);
+    }
+}
+
+test "encrypted: corrupt ciphertext recovery" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    // Write 3 encrypted records and close.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .encryption_key = key,
+        });
+        defer log.deinit();
+
+        _ = try log.append("enc-alpha");
+        _ = try log.append("enc-beta");
+        _ = try log.append("enc-gamma");
+        try log.sync();
+    }
+
+    // Corrupt the ciphertext of the last (3rd) encrypted record.
+    // Each encrypted record wraps a plaintext record:
+    //   plaintext_size = HEADER(12) + payload.len + CRC(4)
+    //   encrypted_size = ENCRYPTION_OVERHEAD(40) + plaintext_size
+    // Record sizes (payload lengths: 9, 8, 9):
+    //   rec1 = 40 + (12 + 9 + 4)  = 65
+    //   rec2 = 40 + (12 + 8 + 4)  = 64
+    //   rec3 = 40 + (12 + 9 + 4)  = 65
+    // rec3 starts at offset 65 + 64 = 129.
+    // Ciphertext starts at offset 40 within the encrypted record.
+    // So flip a byte at file offset 129 + 40 = 169 (inside rec3's ciphertext).
+    {
+        const f = try tmp.dir.openFile("wal", .{ .mode = .read_write });
+        defer f.close();
+
+        const rec1_size: u64 = encryption.ENCRYPTION_OVERHEAD + record.HEADER_SIZE + "enc-alpha".len + record.CRC_SIZE;
+        const rec2_size: u64 = encryption.ENCRYPTION_OVERHEAD + record.HEADER_SIZE + "enc-beta".len + record.CRC_SIZE;
+        const rec3_ciphertext_offset: u64 = rec1_size + rec2_size + encryption.ENCRYPTION_OVERHEAD;
+
+        try f.seekTo(rec3_ciphertext_offset);
+        var byte: [1]u8 = undefined;
+        _ = try f.readAll(&byte);
+        byte[0] ^= 0xFF;
+        try f.seekTo(rec3_ciphertext_offset);
+        try f.writeAll(&byte);
+    }
+
+    // Reopen — recovery should detect the corrupt record and truncate it.
+    // Only 2 records should survive.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .encryption_key = key,
+        });
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 2), log.currentLsn());
+
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        var e1 = try iter.next();
+        try std.testing.expect(e1 != null);
+        defer e1.?.deinit();
+        try std.testing.expectEqual(@as(u64, 1), e1.?.lsn);
+        try std.testing.expectEqualSlices(u8, "enc-alpha", e1.?.payload);
+
+        var e2 = try iter.next();
+        try std.testing.expect(e2 != null);
+        defer e2.?.deinit();
+        try std.testing.expectEqual(@as(u64, 2), e2.?.lsn);
+        try std.testing.expectEqualSlices(u8, "enc-beta", e2.?.payload);
 
         try std.testing.expect((try iter.next()) == null);
     }

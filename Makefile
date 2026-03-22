@@ -47,7 +47,7 @@ check:
 # Format source code
 fmt:
 	@echo "📝 Formatting code..."
-	@zig fmt src/ tests/ bench/ build.zig
+	@zig fmt src/ tests/ bench/ examples/ build.zig
 
 # Quick development iteration loop
 dev: fmt check test-unit

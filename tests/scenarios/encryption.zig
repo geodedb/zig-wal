@@ -174,7 +174,7 @@ test "encryption: compaction of encrypted WAL preserves kept records" {
     try std.testing.expect((try iter.next()) == null);
 }
 
-test "encryption: mixed plaintext then encrypted WAL migration" {
+test "encryption: plaintext records rejected when reopened with key (SEC-0038)" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -194,55 +194,26 @@ test "encryption: mixed plaintext then encrypted WAL migration" {
         try std.testing.expectEqual(@as(u64, 3), log.currentLsn());
     }
 
-    // Phase 2: Reopen with encryption key and append encrypted records.
+    // Phase 2: Reopen with encryption key — recovery rejects all plaintext
+    // records (SEC-0038), so LSN resets to 0. New encrypted appends start
+    // from LSN 1.
     {
         var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
             .encryption_key = key,
         });
         defer log.deinit();
 
-        // Recovery should have found the 3 plaintext records.
-        try std.testing.expectEqual(@as(u64, 3), log.currentLsn());
+        // Recovery rejects plaintext records when key is present.
+        try std.testing.expectEqual(@as(u64, 0), log.currentLsn());
 
-        _ = try log.append("encrypted-4");
-        _ = try log.append("encrypted-5");
+        _ = try log.append("encrypted-1");
+        _ = try log.append("encrypted-2");
 
-        try std.testing.expectEqual(@as(u64, 5), log.currentLsn());
-    }
-
-    // Phase 3: Reopen with key and iterate all 5 records (3 plain + 2 encrypted).
-    {
-        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
-            .encryption_key = key,
-        });
-        defer log.deinit();
-
-        try std.testing.expectEqual(@as(u64, 5), log.currentLsn());
-
-        var iter = try log.iterator(0);
-        defer iter.deinit();
-
-        const expected = [_]struct { lsn: u64, payload: []const u8 }{
-            .{ .lsn = 1, .payload = "plain-1" },
-            .{ .lsn = 2, .payload = "plain-2" },
-            .{ .lsn = 3, .payload = "plain-3" },
-            .{ .lsn = 4, .payload = "encrypted-4" },
-            .{ .lsn = 5, .payload = "encrypted-5" },
-        };
-
-        for (expected) |exp| {
-            var maybe_entry = try iter.next();
-            try std.testing.expect(maybe_entry != null);
-            defer maybe_entry.?.deinit();
-            try std.testing.expectEqual(exp.lsn, maybe_entry.?.lsn);
-            try std.testing.expectEqualSlices(u8, exp.payload, maybe_entry.?.payload);
-        }
-
-        try std.testing.expect((try iter.next()) == null);
+        try std.testing.expectEqual(@as(u64, 2), log.currentLsn());
     }
 }
 
-test "encryption: compaction of mixed plaintext/encrypted WAL" {
+test "encryption: compaction rejects plaintext records with key (SEC-0038)" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -250,22 +221,19 @@ test "encryption: compaction of mixed plaintext/encrypted WAL" {
     var key: [32]u8 = undefined;
     std.crypto.random.bytes(&key);
 
-    // Write 2 plaintext records, close, then 2 encrypted records.
-    {
-        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
-        defer log.deinit();
-        _ = try log.append("plain-1");
-        _ = try log.append("plain-2");
-    }
+    // Write only encrypted records (SEC-0038 prevents mixed-mode).
     {
         var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
             .encryption_key = key,
         });
         defer log.deinit();
+
+        _ = try log.append("encrypted-1");
+        _ = try log.append("encrypted-2");
         _ = try log.append("encrypted-3");
         _ = try log.append("encrypted-4");
 
-        // Compact at LSN 2 — removes both plaintext records.
+        // Compact at LSN 2 — removes first 2 encrypted records.
         try log.compact(2);
 
         try std.testing.expectEqual(@as(u64, 0), log.bytesSinceCompact());
@@ -288,4 +256,95 @@ test "encryption: compaction of mixed plaintext/encrypted WAL" {
 
         try std.testing.expect((try iter.next()) == null);
     }
+}
+
+test "encryption: large payload round-trip (>24B, exercises overlapping decrypt) (SEC-0003)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    const payload_sizes = [_]usize{ 25, 64, 256, 1024, 4096 };
+
+    for (payload_sizes) |size| {
+        // Create a fresh WAL for each payload size.
+        const fname = "wal-large";
+        tmp.dir.deleteFile(fname) catch {};
+
+        const payload = try allocator.alloc(u8, size);
+        defer allocator.free(payload);
+        @memset(payload, 0xAB);
+
+        // Write, close, reopen (exercises recovery with in-place decrypt).
+        {
+            var log = try wal.WriteAheadLog.init(allocator, tmp.dir, fname, .{
+                .encryption_key = key,
+            });
+            defer log.deinit();
+            _ = try log.append(payload);
+        }
+
+        // Recovery path: recoverWithKey → decryptRecordInPlace.
+        {
+            var log = try wal.WriteAheadLog.init(allocator, tmp.dir, fname, .{
+                .encryption_key = key,
+            });
+            defer log.deinit();
+
+            try std.testing.expectEqual(@as(u64, 1), log.currentLsn());
+
+            // Iterator path: readEncryptedEntry → decryptRecordInPlace.
+            var iter = try log.iterator(0);
+            defer iter.deinit();
+
+            var maybe_entry = try iter.next();
+            try std.testing.expect(maybe_entry != null);
+            defer maybe_entry.?.deinit();
+            try std.testing.expectEqual(@as(u64, 1), maybe_entry.?.lsn);
+            try std.testing.expectEqual(size, maybe_entry.?.payload.len);
+            for (maybe_entry.?.payload) |byte| {
+                try std.testing.expectEqual(@as(u8, 0xAB), byte);
+            }
+
+            try std.testing.expect((try iter.next()) == null);
+        }
+    }
+}
+
+test "encryption: batch append with large payloads (SEC-0003)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    // Payloads well above the 24-byte overlap threshold.
+    const payload_64 = "A" ** 64;
+    const payload_128 = "B" ** 128;
+    const payload_256 = "C" ** 256;
+
+    var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal-batch", .{
+        .encryption_key = key,
+    });
+    defer log.deinit();
+
+    const payloads = [_][]const u8{ payload_64, payload_128, payload_256 };
+    const last_lsn = try log.appendBatch(&payloads);
+    try std.testing.expectEqual(@as(u64, 3), last_lsn);
+
+    var iter = try log.iterator(0);
+    defer iter.deinit();
+
+    for (payloads, 1..) |expected, lsn| {
+        var maybe_entry = try iter.next();
+        try std.testing.expect(maybe_entry != null);
+        defer maybe_entry.?.deinit();
+        try std.testing.expectEqual(@as(u64, lsn), maybe_entry.?.lsn);
+        try std.testing.expectEqualSlices(u8, expected, maybe_entry.?.payload);
+    }
+
+    try std.testing.expect((try iter.next()) == null);
 }

@@ -63,6 +63,21 @@ pub fn build(b: *std.Build) void {
         integration_step.dependOn(&run_scenario.step);
     }
 
+    // Fuzz tests (SEC-0040)
+    const fuzz_step = b.step("test-fuzz", "Run fuzz tests for binary parsing entrypoints");
+    const fuzz_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "wal", .module = module },
+            },
+        }),
+    });
+    const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    fuzz_step.dependOn(&run_fuzz_tests.step);
+
     // Benchmark executable
     const bench_step = b.step("bench", "Run performance benchmarks");
     const bench_exe = b.addExecutable(.{
@@ -86,7 +101,23 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     check_step.dependOn(&check.step);
+
+    // Example compilation check (QA-0033)
+    const example_step = b.step("example", "Build example");
+    const example_exe = b.addExecutable(.{
+        .name = "basic-example",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/basic.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "wal", .module = module },
+            },
+        }),
+    });
+    example_step.dependOn(&example_exe.step);
 }

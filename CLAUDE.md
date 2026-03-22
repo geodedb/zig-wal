@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 zig build                # Build library
-zig build test           # Unit tests (39 tests across 6 modules)
-zig build test-integration  # Integration + scenario tests (16 tests)
+zig build test           # Unit tests (79 tests across 8 modules)
+zig build test-integration  # Integration + scenario tests (25 tests)
 zig build check          # Fast syntax check (no codegen, good for IDE)
 
 make dev                 # Quick iteration: fmt + check + unit tests
@@ -31,10 +31,11 @@ Data flow: `caller payload → record.serialize (frame+CRC) → [optional encryp
 ```
 root.zig (public API re-exports)
   └── wal.zig (WriteAheadLog struct — orchestrator)
-        ├── record.zig (serialize/deserialize, CRC32, file I/O)
+        ├── record.zig (serialize/deserialize, CRC32, verifyCrc, file I/O)
+        ├── iterator.zig (forward Iterator over WAL records)
         ├── recovery.zig (forward scan, CRC validation, truncation)
         ├── compaction.zig (bulk-copy above LSN watermark)
-        ├── encryption.zig (AES-256-GCM per-record encrypt/decrypt)
+        ├── encryption.zig (AES-256-GCM per-record encrypt/decrypt, readEncryptedBlob)
         └── atomic.zig (temp+fsync+rename file writes)
 ```
 

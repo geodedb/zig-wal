@@ -217,3 +217,124 @@ test "lifecycle: large payload (128KB)" {
         try std.testing.expect(eof == null);
     }
 }
+
+// ============================================================================
+// Sync Tests (QA-0042)
+// ============================================================================
+
+test "lifecycle: manual_sync with explicit sync survives reopen" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Phase 1: write 3 records with manual_sync, call sync(), close.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .manual_sync = true,
+        });
+        defer log.deinit();
+
+        _ = try log.append("sync-record-1");
+        _ = try log.append("sync-record-2");
+        _ = try log.append("sync-record-3");
+
+        try log.sync();
+    }
+
+    // Phase 2: reopen and verify all 3 records via iterator.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .manual_sync = true,
+        });
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 3), log.currentLsn());
+
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        const expected_payloads = [_][]const u8{ "sync-record-1", "sync-record-2", "sync-record-3" };
+        for (expected_payloads, 1..) |expected, lsn| {
+            var maybe_entry = try iter.next();
+            try std.testing.expect(maybe_entry != null);
+            defer maybe_entry.?.deinit();
+            try std.testing.expectEqual(@as(u64, lsn), maybe_entry.?.lsn);
+            try std.testing.expectEqualSlices(u8, expected, maybe_entry.?.payload);
+        }
+
+        try std.testing.expect((try iter.next()) == null);
+    }
+}
+
+// ============================================================================
+// Batch Content Verification (QA-0043)
+// ============================================================================
+
+test "lifecycle: batch append verifies record contents" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+    defer log.deinit();
+
+    const payloads = [_][]const u8{ "alpha", "beta", "gamma", "delta" };
+    const last_lsn = try log.appendBatch(&payloads);
+
+    try std.testing.expectEqual(@as(u64, 4), last_lsn);
+
+    // Iterate and verify each payload matches in order.
+    var iter = try log.iterator(0);
+    defer iter.deinit();
+
+    for (payloads, 1..) |expected, lsn| {
+        var maybe_entry = try iter.next();
+        try std.testing.expect(maybe_entry != null);
+        defer maybe_entry.?.deinit();
+        try std.testing.expectEqual(@as(u64, lsn), maybe_entry.?.lsn);
+        try std.testing.expectEqualSlices(u8, expected, maybe_entry.?.payload);
+    }
+
+    try std.testing.expect((try iter.next()) == null);
+}
+
+// ============================================================================
+// Iterator from_lsn Tests (QA-0047)
+// ============================================================================
+
+test "lifecycle: iterator from_lsn skips earlier records" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+    defer log.deinit();
+
+    // Write 5 records with known payloads.
+    _ = try log.append("first");
+    _ = try log.append("second");
+    _ = try log.append("third");
+    _ = try log.append("fourth");
+    _ = try log.append("fifth");
+
+    try std.testing.expectEqual(@as(u64, 5), log.currentLsn());
+
+    // Iterate from LSN 3 — should skip records 1, 2, 3 and return only 4, 5.
+    var iter = try log.iterator(3);
+    defer iter.deinit();
+
+    var e1 = try iter.next();
+    try std.testing.expect(e1 != null);
+    defer e1.?.deinit();
+    try std.testing.expectEqual(@as(u64, 4), e1.?.lsn);
+    try std.testing.expectEqualSlices(u8, "fourth", e1.?.payload);
+
+    var e2 = try iter.next();
+    try std.testing.expect(e2 != null);
+    defer e2.?.deinit();
+    try std.testing.expectEqual(@as(u64, 5), e2.?.lsn);
+    try std.testing.expectEqualSlices(u8, "fifth", e2.?.payload);
+
+    // No more records.
+    try std.testing.expect((try iter.next()) == null);
+}

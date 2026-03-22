@@ -9,9 +9,9 @@ useDefault = true
 [allowlist]
 description = "Global allowlist"
 paths = [
-    '''\.zig-cache''',
-    '''zig-out''',
-    '''\.git''',
+    '''(^|/)\.zig-cache(/|$)''',
+    '''(^|/)zig-out(/|$)''',
+    '''(^|/)\.git(/|$)''',
 ]
 
 # Add custom rules or allowlist entries as needed

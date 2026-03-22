@@ -9,19 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial project structure
-- Core library implementation
-- Unit and integration tests
-- CI/CD pipeline
-- Documentation
-
-## [0.1.0] - YYYY-MM-DD
-
-### Added
-
-- Initial release
-- Basic functionality
+- Core WAL library: append, iterate, compact, recover
+- AES-256-GCM per-record encryption with AAD binding
+- Atomic file writes (temp+fsync+rename)
+- Unit and integration test suites
+- Performance benchmarks
+- CI/CD pipeline with multi-optimization-level testing
 - Documentation and examples
 
-[Unreleased]: https://gitlab.com/devnw/zig/wal/-/compare/v0.1.0...HEAD
-[0.1.0]: https://gitlab.com/devnw/zig/wal/-/releases/v0.1.0
+[Unreleased]: https://gitlab.com/devnw/zig/wal/-/commits/main

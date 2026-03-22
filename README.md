@@ -32,7 +32,8 @@ Add to your `build.zig.zon`:
 .dependencies = .{
     .wal = .{
         .url = "https://gitlab.com/devnw/zig/wal/-/archive/v0.1.0/wal-v0.1.0.tar.gz",
-        .hash = "...",
+        // Replace with actual hash — run: zig fetch <url>
+        .hash = "1220...",
     },
 },
 ```

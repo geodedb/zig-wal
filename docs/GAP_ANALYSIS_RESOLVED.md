@@ -90,4 +90,15 @@
 ### Pre-commit hooks
 
 - **Category:** CI/CD
-- **Resolution:** Won't Do. Pre-commit hook management is handled separately from the library codebase. The Makefile includes `pre-commit-install` and `pre-commit` targets for convenience, but hook enforcement is an operational concern, not a code gap.
+- **Resolution:** Won't Do. Pre-commit hook management is handled separately from the library codebase. The Makefile includes `pre-commit-install` and `pre-commit` targets for convenience, but hook enforcement is an operational concern, not a code gap. This includes SEC-0016 (check-yaml `--unsafe` flag).
+
+### CI cache key cross-branch poisoning (SEC-0014)
+
+- **GitLab issue:** [#31](https://gitlab.com/devnw/zig/wal/-/issues/31)
+- **Category:** CI/CD
+- **Resolution:** Won't Do. CI/CD cache policy is handled via separate organizational controls outside this library.
+
+### CI component SHA pinning
+
+- **Category:** CI/CD
+- **Resolution:** Won't Do. CI/CD component pinning is handled via separate organizational controls outside this library.

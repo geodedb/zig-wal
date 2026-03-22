@@ -8,7 +8,7 @@
 
 ## Reporting a Vulnerability
 
-**Please do not report security vulnerabilities through public GitHub issues.**
+**Please do not report security vulnerabilities through public GitLab issues.**
 
 Instead, please report them via email to: security@codepros.dev
 

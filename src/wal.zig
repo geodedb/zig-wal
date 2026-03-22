@@ -20,8 +20,24 @@ const encryption = @import("encryption.zig");
 // ============================================================================
 
 /// Configuration options for a `WriteAheadLog` instance.
+///
+/// **Key material note (SEC-0026):** `Options` is passed **by value** to
+/// `WriteAheadLog.init`, which means the `encryption_key` field is copied
+/// onto the stack at each call site. Zig does not guarantee that
+/// intermediate stack copies are zeroized when they go out of scope.
+/// Callers who need defense-in-depth against stack-residue attacks should
+/// zeroize their own copy of the key after calling `init`:
+///
+/// ```zig
+/// var opts = Options{ .encryption_key = my_key };
+/// var wal = try WriteAheadLog.init(allocator, dir, "wal.log", opts);
+/// encryption.secureZero(std.mem.asBytes(&opts.encryption_key.?));
+/// ```
+///
+/// The `WriteAheadLog` struct zeroizes its internal copy in `deinit`.
 pub const Options = struct {
     /// Optional AES-256-GCM encryption key.  `null` means plaintext mode.
+    /// See the struct-level doc comment for key-material lifecycle notes.
     encryption_key: ?[32]u8 = null,
 
     /// When `true`, the caller is responsible for calling `sync()` explicitly.
@@ -52,6 +68,10 @@ pub const WriteAheadLog = struct {
     bytes_since_compact: u64,
     options: Options,
     appends_since_sync: u32,
+    /// When `true` the WAL file handle is invalid and all operations
+    /// will return `error.WalPoisoned`. Set when the file handle cannot
+    /// be reopened after compaction (SEC-0008).
+    poisoned: bool = false,
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -70,11 +90,18 @@ pub const WriteAheadLog = struct {
         options: Options,
     ) !WriteAheadLog {
         // Open existing file, or create a new one with read+write access.
+        // New files get 0o600 permissions (owner-only) for defense-in-depth (SEC-0015).
         const file = dir.openFile(filename, .{ .mode = .read_write }) catch |err| switch (err) {
-            error.FileNotFound => try dir.createFile(filename, .{ .read = true }),
+            error.FileNotFound => try dir.createFile(filename, .{ .read = true, .mode = 0o600 }),
             else => return err,
         };
         errdefer file.close();
+
+        // Tighten permissions on existing files to owner-only (SEC-0021).
+        // Files created before the SEC-0015 fix may have world-readable
+        // permissions. This is best-effort — fails silently on non-POSIX
+        // platforms or when the caller is not the file owner.
+        std.posix.fchmod(file.handle, 0o600) catch {};
 
         // Scan forward from byte 0 to find the last valid record boundary.
         // Use the encryption-aware scanner when a key is provided.
@@ -99,12 +126,23 @@ pub const WriteAheadLog = struct {
             .bytes_since_compact = info.valid_end,
             .options = options,
             .appends_since_sync = 0,
+            .poisoned = false,
         };
     }
 
-    /// Close the underlying file handle.
+    /// Close the underlying file handle and zeroize any key material (SEC-0002).
     pub fn deinit(self: *WriteAheadLog) void {
-        self.file.close();
+        if (self.options.encryption_key) |*key| {
+            encryption.secureZero(key);
+        }
+        // Guard: if the WAL was poisoned because reopenOrPoison failed to
+        // open a new fd, self.file still holds the stale (already-closed)
+        // handle. Closing it again triggers EBADF → unreachable in
+        // ReleaseFast/ReleaseSmall (UB). Skip the close when poisoned
+        // (SEC-0037, CWE-675).
+        if (!self.poisoned) {
+            self.file.close();
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -118,29 +156,44 @@ pub const WriteAheadLog = struct {
     ///
     /// Returns the LSN assigned to this record.
     pub fn append(self: *WriteAheadLog, payload: []const u8) !u64 {
-        self.current_lsn += 1;
-        const lsn = self.current_lsn;
+        if (self.poisoned) return error.WalPoisoned;
+        const lsn = self.current_lsn + 1;
+
+        // Record file position before write so we can truncate on error (SEC-0030).
+        const pre_write_pos = self.file_end;
 
         if (self.options.encryption_key) |*key| {
             // Encrypt-then-write path: stack-buffer for small payloads (PERF-0001).
-            const bytes_written = try encryption.encryptAndWriteToFile(
-                self.file,
+            const bytes_written = encryption.encryptAndWriteToFile(
                 self.allocator,
+                self.file,
                 key,
                 lsn,
                 payload,
-            );
+            ) catch |err| {
+                // Truncate any partial write to prevent torn records (SEC-0030).
+                self.file.seekTo(pre_write_pos) catch {};
+                std.posix.ftruncate(self.file.handle, pre_write_pos) catch {};
+                return err;
+            };
             self.file_end += bytes_written;
             self.bytes_since_compact += bytes_written;
         } else {
             // Plaintext path.
-            const bytes_written = try record.writeToFile(self.file, self.allocator, lsn, payload);
+            const bytes_written = record.writeToFile(self.allocator, self.file, lsn, payload) catch |err| {
+                self.file.seekTo(pre_write_pos) catch {};
+                std.posix.ftruncate(self.file.handle, pre_write_pos) catch {};
+                return err;
+            };
             self.file_end += bytes_written;
             self.bytes_since_compact += bytes_written;
         }
 
+        // LSN only advances after successful write (SEC-0030).
+        self.current_lsn = lsn;
+
         if (!self.options.manual_sync) {
-            self.appends_since_sync += 1;
+            self.appends_since_sync +|= 1; // Saturating add (SEC-0031).
             if (self.appends_since_sync >= self.options.sync_every_n) {
                 try std.posix.fdatasync(self.file.handle);
                 self.appends_since_sync = 0;
@@ -161,7 +214,8 @@ pub const WriteAheadLog = struct {
     /// Returns the LSN assigned to the last record in the batch.
     /// Errors if `payloads` is empty (there is nothing to flush).
     pub fn appendBatch(self: *WriteAheadLog, payloads: []const []const u8) !u64 {
-        std.debug.assert(payloads.len > 0);
+        if (self.poisoned) return error.WalPoisoned;
+        if (payloads.len == 0) return error.EmptyBatch; // SEC-0023
 
         // Compute total buffer size needed for all records (PERF-0002).
         var total_size: usize = 0;
@@ -175,14 +229,22 @@ pub const WriteAheadLog = struct {
         }
 
         const buf = try self.allocator.alloc(u8, total_size);
-        defer self.allocator.free(buf);
+        defer {
+            // Zeroize the buffer when encryption is active to prevent plaintext
+            // residue in freed heap memory (SEC-0019). The scratch region at the
+            // end of buf holds serialized plaintext records before encryption.
+            if (self.options.encryption_key != null) {
+                encryption.secureZero(buf);
+            }
+            self.allocator.free(buf);
+        }
 
         var offset: usize = 0;
-        var last_lsn: u64 = self.current_lsn;
+        const saved_lsn = self.current_lsn;
+        var last_lsn: u64 = saved_lsn;
 
         for (payloads) |payload| {
-            self.current_lsn += 1;
-            last_lsn = self.current_lsn;
+            last_lsn += 1;
 
             const rec_size = record.HEADER_SIZE + payload.len + record.CRC_SIZE;
 
@@ -192,7 +254,7 @@ pub const WriteAheadLog = struct {
                 // Use the end of `buf` as scratch space for the plaintext.
                 const pt_start = total_size - rec_size;
                 record.serializeInto(buf[pt_start..][0..rec_size], last_lsn, payload);
-                encryption.encryptIntoSlice(buf[offset..][0..enc_size], key, buf[pt_start..][0..rec_size]);
+                encryption.encryptInto(buf[offset..][0..enc_size], key, buf[pt_start..][0..rec_size]);
                 offset += enc_size;
             } else {
                 record.serializeInto(buf[offset..][0..rec_size], last_lsn, payload);
@@ -200,13 +262,28 @@ pub const WriteAheadLog = struct {
             }
         }
 
-        try self.file.writeAll(buf[0..offset]);
+        // Record file position before write so we can truncate on error (SEC-0030).
+        const pre_write_pos = self.file_end;
+
+        self.file.writeAll(buf[0..offset]) catch |err| {
+            // Truncate any partial write to prevent torn records (SEC-0030).
+            self.file.seekTo(pre_write_pos) catch {};
+            std.posix.ftruncate(self.file.handle, pre_write_pos) catch {};
+            return err;
+        };
+
+        // LSN only advances after successful write (SEC-0030).
+        self.current_lsn = last_lsn;
         self.file_end += offset;
         self.bytes_since_compact += offset;
 
+        // Respect sync_every_n threshold, consistent with append() (SEC-0028).
         if (!self.options.manual_sync) {
-            try std.posix.fdatasync(self.file.handle);
-            self.appends_since_sync = 0;
+            self.appends_since_sync +|= @intCast(payloads.len); // Saturating add (SEC-0031).
+            if (self.appends_since_sync >= self.options.sync_every_n) {
+                try std.posix.fdatasync(self.file.handle);
+                self.appends_since_sync = 0;
+            }
         }
 
         return last_lsn;
@@ -217,6 +294,7 @@ pub const WriteAheadLog = struct {
     /// Uses `fdatasync` (metadata-update not needed for appends).
     /// Use this when `options.manual_sync` is `true`.
     pub fn sync(self: *WriteAheadLog) !void {
+        if (self.poisoned) return error.WalPoisoned;
         try std.posix.fdatasync(self.file.handle);
         self.appends_since_sync = 0;
     }
@@ -229,13 +307,19 @@ pub const WriteAheadLog = struct {
     ///
     /// If compaction fails the file handle is reopened so the WAL remains
     /// usable, and the original error is propagated.
+    ///
+    /// If the file handle cannot be reopened after either a failed or
+    /// successful compaction, the WAL is marked poisoned and subsequent
+    /// operations will return `error.WalPoisoned` (SEC-0008).
     pub fn compact(self: *WriteAheadLog, up_to_lsn: u64) !void {
+        if (self.poisoned) return error.WalPoisoned;
+
         // Close the current file handle — compaction will rename a new file
         // over it and we must not hold a stale handle afterward.
         self.file.close();
 
-        // Run the atomic rewrite.  On error, reopen the original file so the
-        // WAL remains in a consistent (if unchanged) state.
+        // Run the atomic rewrite.  On error, attempt to reopen the original
+        // file so the WAL remains usable.
         const result = compaction.compact(
             self.allocator,
             self.dir,
@@ -243,18 +327,40 @@ pub const WriteAheadLog = struct {
             up_to_lsn,
             if (self.options.encryption_key) |*key| key else null,
         ) catch |err| {
-            self.file = try self.dir.openFile(self.filename, .{ .mode = .read_write });
-            try self.file.seekFromEnd(0);
+            self.reopenOrPoison();
             return err;
         };
 
-        // Reopen the (now compacted) file for appending.
-        self.file = try self.dir.openFile(self.filename, .{ .mode = .read_write });
-        try self.file.seekFromEnd(0);
+        // Reopen the (now compacted) file for appending (QA-0010).
+        self.reopenOrPoison();
+        if (self.poisoned) return error.WalPoisoned;
 
         // Update bookkeeping.
         self.file_end = result.new_size;
         self.bytes_since_compact = 0;
+        self.appends_since_sync = 0; // finalizeTempFile already fsynced (QA-0036)
+    }
+
+    /// Reopen the WAL file for appending and seek to end.  If either the
+    /// open or seek fails the WAL is marked poisoned (SEC-0008, QA-0010).
+    ///
+    /// Invariant (SEC-0037): when this function sets `poisoned = true`,
+    /// `self.file` is always already-closed (stale). This allows `deinit`
+    /// to skip the close unconditionally when poisoned, preventing a
+    /// double-close that would trigger EBADF → `unreachable` in
+    /// ReleaseFast/ReleaseSmall builds (CWE-675).
+    fn reopenOrPoison(self: *WriteAheadLog) void {
+        self.file = self.dir.openFile(self.filename, .{ .mode = .read_write }) catch {
+            // openFile failed — self.file still holds the stale (closed) fd.
+            self.poisoned = true;
+            return;
+        };
+        self.file.seekFromEnd(0) catch {
+            // seekFromEnd failed — self.file holds a valid fd that we must
+            // close now so the poisoned invariant (stale fd) holds.
+            self.file.close();
+            self.poisoned = true;
+        };
     }
 
     // -------------------------------------------------------------------------
@@ -282,179 +388,16 @@ pub const WriteAheadLog = struct {
     /// write position.  Call `Iterator.deinit` when done.
     pub fn iterator(self: *const WriteAheadLog, from_lsn: u64) !Iterator {
         const read_file = try self.dir.openFile(self.filename, .{ .mode = .read_only });
-        return Iterator{
-            .file = read_file,
-            .allocator = self.allocator,
-            .from_lsn = from_lsn,
-            .done = false,
-            .encryption_key = if (self.options.encryption_key) |k| k else null,
-        };
+        return Iterator.init(
+            self.allocator,
+            read_file,
+            from_lsn,
+            if (self.options.encryption_key) |k| k else null,
+        );
     }
 
-    /// A forward iterator over WAL records.
-    pub const Iterator = struct {
-        file: std.fs.File,
-        allocator: std.mem.Allocator,
-        from_lsn: u64,
-        done: bool,
-        encryption_key: ?[32]u8,
-
-        /// A single WAL entry returned by the iterator.
-        ///
-        /// The caller must call `deinit` to release the heap-allocated payload.
-        pub const Entry = struct {
-            lsn: u64,
-            payload: []const u8,
-            allocator: std.mem.Allocator,
-
-            /// Free the heap-allocated payload slice.
-            pub fn deinit(self: *Entry) void {
-                self.allocator.free(self.payload);
-            }
-        };
-
-        /// Advance to the next record and return it, or `null` at EOF.
-        ///
-        /// Records with `lsn <= from_lsn` are skipped silently.
-        ///
-        /// - Returns `null` on EOF (clean end of file).
-        /// - Returns `null` on torn writes (incomplete read).
-        /// - Returns `null` on CRC mismatch (on-disk corruption).
-        /// - Propagates all other I/O errors to the caller.
-        pub fn next(self: *Iterator) !?Entry {
-            if (self.done) return null;
-
-            while (true) {
-                // Peek at the first 12 bytes to detect encrypted vs plaintext.
-                var peek_buf: [12]u8 = undefined;
-                const peek_n = try self.file.readAll(&peek_buf);
-                if (peek_n < 12) {
-                    self.done = true;
-                    return null; // clean EOF or torn header
-                }
-
-                if (self.encryption_key != null and encryption.isEncrypted(&peek_buf)) {
-                    // ── Encrypted record path ──────────────────────────────
-                    const entry = self.readEncryptedEntry(&peek_buf) catch |err| switch (err) {
-                        error.InvalidEncryptedRecord,
-                        error.DecryptionFailed,
-                        error.InvalidRecord,
-                        error.CrcMismatch,
-                        => {
-                            self.done = true;
-                            return null;
-                        },
-                        else => return err,
-                    };
-                    if (entry == null) {
-                        self.done = true;
-                        return null;
-                    }
-                    const e = entry.?;
-
-                    if (e.lsn <= self.from_lsn) {
-                        self.allocator.free(e.payload);
-                        continue;
-                    }
-                    return e;
-                } else {
-                    // ── Plaintext record path ──────────────────────────────
-                    // The 12 bytes are the standard record header.
-                    const hdr_info = record.HeaderInfo{
-                        .lsn = std.mem.readInt(u64, peek_buf[0..8], .little),
-                        .payload_len = std.mem.readInt(u32, peek_buf[8..12], .little),
-                    };
-
-                    // Skip records below the requested LSN by seeking past
-                    // payload + CRC without reading them (PERF-0007).
-                    if (hdr_info.lsn <= self.from_lsn) {
-                        try self.file.seekBy(@as(i64, @intCast(@as(usize, hdr_info.payload_len) + record.CRC_SIZE)));
-                        continue;
-                    }
-
-                    const maybe_payload = record.readPayloadAndVerify(
-                        self.file,
-                        self.allocator,
-                        hdr_info,
-                        peek_buf,
-                    ) catch |err| switch (err) {
-                        error.CrcMismatch => {
-                            self.done = true;
-                            return null;
-                        },
-                        else => return err,
-                    };
-                    if (maybe_payload == null) {
-                        self.done = true;
-                        return null;
-                    }
-
-                    return Entry{
-                        .lsn = hdr_info.lsn,
-                        .payload = maybe_payload.?,
-                        .allocator = self.allocator,
-                    };
-                }
-            }
-        }
-
-        /// Read a single encrypted record, given the 12-byte peek that was
-        /// already consumed from the file.
-        ///
-        /// Uses in-place decryption to reduce allocations from 3 to 1 (PERF-0004).
-        fn readEncryptedEntry(self: *Iterator, peek_buf: *const [12]u8) !?Entry {
-            const blob_len = std.mem.readInt(u32, peek_buf[0..4], .little);
-            const total_on_disk: usize = encryption.BLOB_LEN_SIZE + @as(usize, blob_len);
-
-            if (total_on_disk < 12) return null; // corrupt blob_len
-            const remaining = total_on_disk - 12;
-
-            // Assemble the full encrypted blob.
-            const blob_buf = try self.allocator.alloc(u8, total_on_disk);
-            errdefer self.allocator.free(blob_buf);
-
-            @memcpy(blob_buf[0..12], peek_buf);
-
-            if (remaining > 0) {
-                const n = try self.file.readAll(blob_buf[12..]);
-                if (n < remaining) {
-                    self.allocator.free(blob_buf);
-                    return null; // torn write
-                }
-            }
-
-            // Decrypt in-place — plaintext overwrites ciphertext region of blob_buf.
-            const key = &self.encryption_key.?;
-            const plaintext = encryption.decryptRecordInPlace(key, blob_buf) catch |err| {
-                self.allocator.free(blob_buf);
-                return err;
-            };
-
-            // Deserialize the inner record from the in-place plaintext.
-            const rec = record.deserialize(plaintext) catch |err| {
-                self.allocator.free(blob_buf);
-                return err;
-            };
-
-            // Copy only the payload out, then free blob_buf.
-            const payload_copy = self.allocator.dupe(u8, rec.payload) catch |err| {
-                self.allocator.free(blob_buf);
-                return err;
-            };
-            self.allocator.free(blob_buf);
-
-            return Entry{
-                .lsn = rec.lsn,
-                .payload = payload_copy,
-                .allocator = self.allocator,
-            };
-        }
-
-        /// Close the read-only file handle.
-        pub fn deinit(self: *Iterator) void {
-            self.file.close();
-        }
-    };
+    /// A forward iterator over WAL records (extracted to iterator.zig — QA-0001).
+    pub const Iterator = @import("iterator.zig").Iterator;
 };
 
 // ============================================================================
@@ -508,6 +451,22 @@ test "appendBatch: single fsync for multiple records" {
 
     // Explicit sync — must not error.
     try wal.sync();
+}
+
+test "appendBatch: empty payloads returns EmptyBatch (SEC-0023)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+    defer wal.deinit();
+
+    const empty = [_][]const u8{};
+    const result = wal.appendBatch(&empty);
+    try std.testing.expectError(error.EmptyBatch, result);
+
+    // LSN should not have changed.
+    try std.testing.expectEqual(@as(u64, 0), wal.currentLsn());
 }
 
 test "init: recovers state after close and reopen" {
@@ -844,4 +803,164 @@ test "encrypted: iterator from_lsn skips earlier encrypted records" {
 
     const eof_enc = try iter.next();
     try std.testing.expect(eof_enc == null);
+}
+
+test "deinit: encryption key zeroized after close (SEC-0002)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    var wal_inst = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
+        .encryption_key = key,
+    });
+    _ = try wal_inst.append("data");
+
+    // Verify key is present before deinit.
+    try std.testing.expect(!std.mem.allEqual(u8, &wal_inst.options.encryption_key.?, 0));
+
+    wal_inst.deinit();
+
+    // After deinit, key must be zeroed.
+    try std.testing.expect(std.mem.allEqual(u8, &wal_inst.options.encryption_key.?, 0));
+}
+
+test "iterator deinit: encryption key zeroized (SEC-0002)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    var wal_inst = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
+        .encryption_key = key,
+    });
+    defer wal_inst.deinit();
+    _ = try wal_inst.append("data");
+
+    var iter = try wal_inst.iterator(0);
+
+    // Verify key is present before deinit.
+    try std.testing.expect(!std.mem.allEqual(u8, &iter.encryption_key.?, 0));
+
+    iter.deinit();
+
+    // After deinit, key must be zeroed.
+    try std.testing.expect(std.mem.allEqual(u8, &iter.encryption_key.?, 0));
+}
+
+test "init: tightens permissions on existing files to 0o600 (SEC-0021)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Create a file with world-readable permissions (simulating pre-SEC-0015 file).
+    const f = try tmp.dir.createFile("wal.log", .{ .read = true, .mode = 0o644 });
+    f.close();
+
+    // Verify file is world-readable.
+    const stat_before = try tmp.dir.statFile("wal.log");
+    // Check group-read bit (0o040) — should be set for 0o644.
+    try std.testing.expect(stat_before.mode & 0o040 != 0);
+
+    // Open via WAL init — should tighten to 0o600.
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+    defer wal.deinit();
+
+    // Verify permissions were tightened.
+    const stat_after = try tmp.dir.statFile("wal.log");
+    // group-read and other-read bits should be cleared.
+    try std.testing.expectEqual(@as(u32, 0), stat_after.mode & 0o077);
+}
+
+test "sync_every_n: counter increments and resets (QA-0021)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var log = try WriteAheadLog.init(allocator, tmp.dir, "test.wal", .{
+        .sync_every_n = 3,
+    });
+    defer log.deinit();
+
+    // After 1 append, counter should be 1
+    _ = try log.append("one");
+    try std.testing.expectEqual(@as(u32, 1), log.appends_since_sync);
+
+    // After 2 appends, counter should be 2
+    _ = try log.append("two");
+    try std.testing.expectEqual(@as(u32, 2), log.appends_since_sync);
+
+    // After 3 appends, counter should reset to 0 (sync fired)
+    _ = try log.append("three");
+    try std.testing.expectEqual(@as(u32, 0), log.appends_since_sync);
+
+    // Counter starts again
+    _ = try log.append("four");
+    try std.testing.expectEqual(@as(u32, 1), log.appends_since_sync);
+}
+
+test "sync_every_n: manual_sync skips counter (QA-0021)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var log = try WriteAheadLog.init(allocator, tmp.dir, "test.wal", .{
+        .manual_sync = true,
+        .sync_every_n = 2,
+    });
+    defer log.deinit();
+
+    _ = try log.append("one");
+    try std.testing.expectEqual(@as(u32, 0), log.appends_since_sync);
+
+    _ = try log.append("two");
+    try std.testing.expectEqual(@as(u32, 0), log.appends_since_sync);
+}
+
+test "sync_every_n: appendBatch respects threshold (QA-0021)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var log = try WriteAheadLog.init(allocator, tmp.dir, "test.wal", .{
+        .sync_every_n = 5,
+    });
+    defer log.deinit();
+
+    // Batch of 3 — should set counter to 3
+    const batch1 = [_][]const u8{ "a", "b", "c" };
+    _ = try log.appendBatch(&batch1);
+    try std.testing.expectEqual(@as(u32, 3), log.appends_since_sync);
+
+    // Batch of 3 more — total 6 >= 5, should trigger sync and reset
+    const batch2 = [_][]const u8{ "d", "e", "f" };
+    _ = try log.appendBatch(&batch2);
+    try std.testing.expectEqual(@as(u32, 0), log.appends_since_sync);
+}
+
+test "poisoned WAL rejects all operations (QA-0017)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "test.wal", .{ .manual_sync = true });
+    defer wal.deinit();
+
+    // Verify normal operation works first.
+    _ = try wal.append("before poison");
+
+    // Poison the WAL.
+    wal.poisoned = true;
+
+    // All write operations should return WalPoisoned.
+    try std.testing.expectError(error.WalPoisoned, wal.append("after poison"));
+
+    const batch = [_][]const u8{ "a", "b" };
+    try std.testing.expectError(error.WalPoisoned, wal.appendBatch(&batch));
+
+    try std.testing.expectError(error.WalPoisoned, wal.sync());
 }
