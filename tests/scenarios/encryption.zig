@@ -173,3 +173,119 @@ test "encryption: compaction of encrypted WAL preserves kept records" {
 
     try std.testing.expect((try iter.next()) == null);
 }
+
+test "encryption: mixed plaintext then encrypted WAL migration" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    // Phase 1: Write plaintext records (no encryption key).
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+
+        _ = try log.append("plain-1");
+        _ = try log.append("plain-2");
+        _ = try log.append("plain-3");
+
+        try std.testing.expectEqual(@as(u64, 3), log.currentLsn());
+    }
+
+    // Phase 2: Reopen with encryption key and append encrypted records.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .encryption_key = key,
+        });
+        defer log.deinit();
+
+        // Recovery should have found the 3 plaintext records.
+        try std.testing.expectEqual(@as(u64, 3), log.currentLsn());
+
+        _ = try log.append("encrypted-4");
+        _ = try log.append("encrypted-5");
+
+        try std.testing.expectEqual(@as(u64, 5), log.currentLsn());
+    }
+
+    // Phase 3: Reopen with key and iterate all 5 records (3 plain + 2 encrypted).
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .encryption_key = key,
+        });
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 5), log.currentLsn());
+
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        const expected = [_]struct { lsn: u64, payload: []const u8 }{
+            .{ .lsn = 1, .payload = "plain-1" },
+            .{ .lsn = 2, .payload = "plain-2" },
+            .{ .lsn = 3, .payload = "plain-3" },
+            .{ .lsn = 4, .payload = "encrypted-4" },
+            .{ .lsn = 5, .payload = "encrypted-5" },
+        };
+
+        for (expected) |exp| {
+            var maybe_entry = try iter.next();
+            try std.testing.expect(maybe_entry != null);
+            defer maybe_entry.?.deinit();
+            try std.testing.expectEqual(exp.lsn, maybe_entry.?.lsn);
+            try std.testing.expectEqualSlices(u8, exp.payload, maybe_entry.?.payload);
+        }
+
+        try std.testing.expect((try iter.next()) == null);
+    }
+}
+
+test "encryption: compaction of mixed plaintext/encrypted WAL" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var key: [32]u8 = undefined;
+    std.crypto.random.bytes(&key);
+
+    // Write 2 plaintext records, close, then 2 encrypted records.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+        _ = try log.append("plain-1");
+        _ = try log.append("plain-2");
+    }
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .encryption_key = key,
+        });
+        defer log.deinit();
+        _ = try log.append("encrypted-3");
+        _ = try log.append("encrypted-4");
+
+        // Compact at LSN 2 — removes both plaintext records.
+        try log.compact(2);
+
+        try std.testing.expectEqual(@as(u64, 0), log.bytesSinceCompact());
+
+        // Iterate — should see only encrypted records 3 and 4.
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        var maybe_e3 = try iter.next();
+        try std.testing.expect(maybe_e3 != null);
+        defer maybe_e3.?.deinit();
+        try std.testing.expectEqual(@as(u64, 3), maybe_e3.?.lsn);
+        try std.testing.expectEqualSlices(u8, "encrypted-3", maybe_e3.?.payload);
+
+        var maybe_e4 = try iter.next();
+        try std.testing.expect(maybe_e4 != null);
+        defer maybe_e4.?.deinit();
+        try std.testing.expectEqual(@as(u64, 4), maybe_e4.?.lsn);
+        try std.testing.expectEqualSlices(u8, "encrypted-4", maybe_e4.?.payload);
+
+        try std.testing.expect((try iter.next()) == null);
+    }
+}

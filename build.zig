@@ -21,6 +21,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -61,6 +62,22 @@ pub fn build(b: *std.Build) void {
         const run_scenario = b.addRunArtifact(scenario_tests);
         integration_step.dependOn(&run_scenario.step);
     }
+
+    // Benchmark executable
+    const bench_step = b.step("bench", "Run performance benchmarks");
+    const bench_exe = b.addExecutable(.{
+        .name = "bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/main.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "wal", .module = module },
+            },
+        }),
+    });
+    const run_bench = b.addRunArtifact(bench_exe);
+    bench_step.dependOn(&run_bench.step);
 
     // Check step for IDE integration (fast syntax validation)
     const check_step = b.step("check", "Check for compilation errors");

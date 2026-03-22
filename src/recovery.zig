@@ -131,11 +131,10 @@ pub fn recoverWithKey(
                 if (rest_n < @as(usize, @intCast(remaining))) break; // torn write
             }
 
-            // Decrypt to get the inner plaintext record bytes.
-            const plaintext = encryption.decryptRecord(allocator, key.?, blob_buf) catch {
+            // Decrypt in-place to get the inner plaintext record bytes (PERF-0003).
+            const plaintext = encryption.decryptRecordInPlace(key.?, blob_buf) catch {
                 break; // decryption failure — treat as end-of-valid-log
             };
-            defer allocator.free(plaintext);
 
             // Deserialize the inner record to extract the LSN and verify CRC.
             const rec = record.deserialize(plaintext) catch {

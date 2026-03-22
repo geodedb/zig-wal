@@ -30,18 +30,30 @@ stages:
   - sbom
   - release
 
-# Zig installation template
+# Zig installation template — downloads only when not cached (PERF-0009).
 .install-zig: &install-zig
-  - apt-get update && apt-get install -y curl xz-utils
-  - curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
-  - tar -xf zig.tar.xz
+  - |
+    if [ ! -f "zig-linux-x86_64-${ZIG_VERSION}/zig" ]; then
+      apt-get update && apt-get install -y curl xz-utils
+      curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+      tar -xf zig.tar.xz
+      rm zig.tar.xz
+    fi
   - export PATH="$PWD/zig-linux-x86_64-${ZIG_VERSION}:$PATH"
   - zig version
+
+# Cache the Zig toolchain directory across pipeline runs.
+.zig-cache: &zig-cache
+  cache:
+    key: "zig-${ZIG_VERSION}"
+    paths:
+      - zig-linux-x86_64-${ZIG_VERSION}/
 
 # Build job
 build:
   stage: build
   image: debian:bookworm-slim
+  <<: *zig-cache
   before_script:
     - *install-zig
   script:
@@ -55,6 +67,7 @@ build:
 test:
   stage: test
   image: debian:bookworm-slim
+  <<: *zig-cache
   before_script:
     - *install-zig
   script:
@@ -66,6 +79,7 @@ test:
 test-integration:
   stage: test
   image: debian:bookworm-slim
+  <<: *zig-cache
   before_script:
     - *install-zig
   script:
@@ -77,6 +91,7 @@ test-integration:
 test-release-safe:
   stage: test
   image: debian:bookworm-slim
+  <<: *zig-cache
   before_script:
     - *install-zig
   script:
@@ -88,6 +103,7 @@ test-release-safe:
 test-cross-build:
   stage: test
   image: debian:bookworm-slim
+  <<: *zig-cache
   before_script:
     - *install-zig
   script:

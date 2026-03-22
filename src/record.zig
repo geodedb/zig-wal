@@ -97,7 +97,7 @@ pub fn serialize(
 ///
 /// `buf` must be at least `HEADER_SIZE + payload.len + CRC_SIZE` bytes.
 /// Panics in debug mode if `buf` is too small.
-fn serializeInto(buf: []u8, lsn: u64, payload: []const u8) void {
+pub fn serializeInto(buf: []u8, lsn: u64, payload: []const u8) void {
     std.debug.assert(buf.len >= HEADER_SIZE + payload.len + CRC_SIZE);
 
     std.mem.writeInt(u64, buf[0..8], lsn, .little);
@@ -206,28 +206,38 @@ pub fn readPayloadAndVerify(
     header_buf: [HEADER_SIZE]u8,
 ) !?[]u8 {
     const payload_len = header_info.payload_len;
-    const total_tail = @as(usize, payload_len) + CRC_SIZE;
 
-    const tail = try allocator.alloc(u8, total_tail);
-    defer allocator.free(tail);
+    // Allocate only the payload buffer — read CRC separately into a stack var.
+    const payload = try allocator.alloc(u8, payload_len);
+    errdefer allocator.free(payload);
 
-    const n = try file.readAll(tail);
-    if (n < total_tail) return null; // torn write
+    const pn = try file.readAll(payload);
+    if (pn < payload_len) {
+        allocator.free(payload);
+        return null; // torn write
+    }
 
-    const payload_slice = tail[0..payload_len];
-    const stored_crc = std.mem.readInt(u32, tail[payload_len..][0..4], .little);
+    var crc_buf: [CRC_SIZE]u8 = undefined;
+    const cn = try file.readAll(&crc_buf);
+    if (cn < CRC_SIZE) {
+        allocator.free(payload);
+        return null; // torn write
+    }
+
+    const stored_crc = std.mem.readInt(u32, &crc_buf, .little);
 
     // Recompute CRC over the 12-byte header we already consumed + payload.
     var h = Crc32IsoHdlc.init();
     h.update(&header_buf);
-    h.update(payload_slice);
+    h.update(payload);
     const computed_crc = h.final();
 
-    if (stored_crc != computed_crc) return error.CrcMismatch;
+    if (stored_crc != computed_crc) {
+        allocator.free(payload);
+        return error.CrcMismatch;
+    }
 
-    // Return an allocator-owned copy of just the payload.
-    const payload_copy = try allocator.dupe(u8, payload_slice);
-    return payload_copy;
+    return payload;
 }
 
 // ============================================================================

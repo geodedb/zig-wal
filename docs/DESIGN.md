@@ -209,11 +209,13 @@ const wal = @import("wal");
 pub const WriteAheadLog = struct {
     // ... internal state ...
 
-    /// Open or create a WAL at the given file path.
+    /// Open or create a WAL file at `dir`/`filename`, recover state from any
+    /// existing records, truncate trailing corruption, and position for append.
     /// If `encryption_key` is provided, records are AES-256-GCM encrypted.
     pub fn init(
         allocator: std.mem.Allocator,
-        file_path: []const u8,
+        dir: std.fs.Dir,
+        filename: []const u8,
         options: Options,
     ) !WriteAheadLog;
 
@@ -232,21 +234,41 @@ pub const WriteAheadLog = struct {
     /// followed by a single sync).
     pub fn sync(self: *WriteAheadLog) !void;
 
-    /// Iterate over all valid records in the WAL, starting from the beginning
-    /// or from a specific LSN. Returns an iterator that yields Record values.
-    /// Caller must call `record.deinit()` on each yielded record to free its
-    /// payload allocation.
-    pub fn iterator(self: *WriteAheadLog, from_lsn: u64) Iterator;
+    /// Iterate over all valid records in the WAL, starting after `from_lsn`.
+    /// Returns an iterator that yields Entry values. Caller must call
+    /// `entry.deinit()` on each yielded entry to free its payload allocation.
+    /// The iterator opens an independent read-only file handle.
+    pub fn iterator(self: *const WriteAheadLog, from_lsn: u64) !Iterator;
 
     /// Remove all records with LSN <= `up_to_lsn` by rewriting the WAL file.
     /// The rewrite is atomic (temp file + fsync + rename).
     pub fn compact(self: *WriteAheadLog, up_to_lsn: u64) !void;
 
     /// Return the current (highest assigned) LSN, or 0 if no records exist.
-    pub fn currentLsn(self: *WriteAheadLog) u64;
+    pub fn currentLsn(self: *const WriteAheadLog) u64;
 
     /// Return the number of bytes written since the last compaction.
-    pub fn bytesSinceCompact(self: *WriteAheadLog) u64;
+    pub fn bytesSinceCompact(self: *const WriteAheadLog) u64;
+
+    pub const Iterator = struct {
+        // ... internal state ...
+
+        pub const Entry = struct {
+            lsn: u64,
+            payload: []const u8,
+            allocator: std.mem.Allocator,
+
+            pub fn deinit(self: *Entry) void;
+        };
+
+        /// Return the next valid entry, or null at end-of-log.
+        /// Returns error on I/O failure. Stops (returns null) at first
+        /// CRC mismatch or incomplete record (torn write boundary).
+        pub fn next(self: *Iterator) !?Entry;
+
+        /// Close the read-only file handle.
+        pub fn deinit(self: *Iterator) void;
+    };
 };
 
 pub const Options = struct {
@@ -255,23 +277,6 @@ pub const Options = struct {
     /// If true, do not fsync after each append (caller manages durability).
     /// Useful for batch writes where a single sync at the end is sufficient.
     manual_sync: bool = false,
-};
-
-pub const Record = struct {
-    lsn: u64,
-    payload: []const u8,
-    allocator: std.mem.Allocator,
-
-    pub fn deinit(self: *Record) void;
-};
-
-pub const Iterator = struct {
-    // ... internal state ...
-
-    /// Return the next valid record, or null at end-of-log.
-    /// Returns error on I/O failure. Stops (returns null) at first
-    /// CRC mismatch or incomplete record (torn write boundary).
-    pub fn next(self: *Iterator) !?Record;
 };
 
 // ── Utilities ──────────────────────────────────────────────────────
@@ -398,9 +403,9 @@ On `init()`:
 
 1. Open WAL file for reading
 2. Scan records, collecting those with LSN > `up_to_lsn`
-3. Write kept records to temp file (`wal.tmp`)
+3. Write kept records to temp file (`{filename}.tmp`)
 4. Fsync temp file
-5. Atomic rename `wal.tmp` → `wal` (or caller's filename)
+5. Atomic rename `{filename}.tmp` → `{filename}`
 6. Reopen for append
 7. Update internal state (`file_end`, byte counters)
 
@@ -439,7 +444,7 @@ A convenience function is provided for the common pattern:
 /// Load a 256-bit key from a hex-encoded environment variable.
 /// Returns null if the variable is not set.
 /// Returns error.InvalidKey if the value is not exactly 64 hex characters.
-pub fn loadKeyFromEnv(allocator: std.mem.Allocator, env_var: []const u8) !?[32]u8;
+pub fn loadKeyFromEnv(env_var: []const u8) EncryptionError!?[32]u8;
 ```
 
 ### 5.3 CRC Variant

@@ -105,6 +105,85 @@ pub fn encryptRecord(
     return buf;
 }
 
+/// Encrypt `plaintext` into the provided buffer `buf`.
+///
+/// `buf` must be at least `ENCRYPTION_OVERHEAD + plaintext.len` bytes.
+/// No heap allocation.
+fn encryptInto(buf: []u8, key: *const [32]u8, plaintext: []const u8) void {
+    const total_len = ENCRYPTION_OVERHEAD + plaintext.len;
+    std.debug.assert(buf.len >= total_len);
+
+    const blob_len: u32 = @intCast(MAGIC_SIZE + NONCE_SIZE + TAG_SIZE + plaintext.len);
+    std.mem.writeInt(u32, buf[OFF_BLOB_LEN..][0..4], blob_len, .little);
+    @memcpy(buf[OFF_MAGIC..][0..MAGIC_SIZE], &MAGIC);
+
+    var nonce: [NONCE_SIZE]u8 = undefined;
+    std.crypto.random.bytes(&nonce);
+    @memcpy(buf[OFF_NONCE..][0..NONCE_SIZE], &nonce);
+
+    var tag: [TAG_SIZE]u8 = undefined;
+    const ct = buf[OFF_CIPHERTEXT..][0..plaintext.len];
+    Aes256Gcm.encrypt(ct, &tag, plaintext, &.{}, nonce, key.*);
+    @memcpy(buf[OFF_TAG..][0..TAG_SIZE], &tag);
+}
+
+/// Encrypt `plaintext` into the provided buffer `buf` (public entry point).
+///
+/// `buf` must be at least `ENCRYPTION_OVERHEAD + plaintext.len` bytes.
+/// No heap allocation.
+pub fn encryptIntoSlice(buf: []u8, key: *const [32]u8, plaintext: []const u8) void {
+    encryptInto(buf, key, plaintext);
+}
+
+/// Serialize a WAL record (header+payload+CRC) and encrypt it, then write the
+/// encrypted blob to `file` in a single `writeAll`.
+///
+/// Uses stack allocation for plaintext payloads ≤ STACK_WRITE_THRESHOLD (64 KB),
+/// matching the plaintext path's zero-alloc optimization.
+/// Falls back to heap allocation for larger payloads.
+///
+/// Returns the total number of bytes written (encrypted blob size).
+pub fn encryptAndWriteToFile(
+    file: std.fs.File,
+    allocator: std.mem.Allocator,
+    key: *const [32]u8,
+    lsn: u64,
+    payload: []const u8,
+) !usize {
+    const rec = @import("record.zig");
+    const plaintext_len = rec.HEADER_SIZE + payload.len + rec.CRC_SIZE;
+    const encrypted_len = ENCRYPTION_OVERHEAD + plaintext_len;
+
+    if (plaintext_len <= STACK_WRITE_THRESHOLD) {
+        // Stack path: serialize plaintext into stack buffer, encrypt into another.
+        var pt_buf: [rec.HEADER_SIZE + STACK_WRITE_THRESHOLD + rec.CRC_SIZE]u8 = undefined;
+        const pt = pt_buf[0..plaintext_len];
+        rec.serializeInto(pt, lsn, payload);
+
+        var enc_buf: [ENCRYPTION_OVERHEAD + rec.HEADER_SIZE + STACK_WRITE_THRESHOLD + rec.CRC_SIZE]u8 = undefined;
+        const enc = enc_buf[0..encrypted_len];
+        encryptInto(enc, key, pt);
+
+        try file.writeAll(enc);
+    } else {
+        // Heap path for large payloads.
+        const pt = try allocator.alloc(u8, plaintext_len);
+        defer allocator.free(pt);
+        rec.serializeInto(pt, lsn, payload);
+
+        const enc = try allocator.alloc(u8, encrypted_len);
+        defer allocator.free(enc);
+        encryptInto(enc, key, pt);
+
+        try file.writeAll(enc);
+    }
+
+    return encrypted_len;
+}
+
+/// Stack buffer threshold matching record.zig.
+const STACK_WRITE_THRESHOLD: usize = 64 * 1024;
+
 /// Decrypt an encrypted record previously produced by `encryptRecord`.
 ///
 /// Returns a newly allocated buffer containing the plaintext.
@@ -150,6 +229,39 @@ pub fn decryptRecord(
     return plaintext;
 }
 
+/// Decrypt an encrypted record, writing the plaintext into the front of
+/// `blob` (reusing the same allocation). Returns a slice into `blob[0..]`
+/// containing the plaintext. No heap allocation.
+///
+/// The returned slice points into `blob` and is only valid while `blob`
+/// is alive. The rest of `blob` is clobbered.
+pub fn decryptRecordInPlace(
+    key: *const [32]u8,
+    blob: []u8,
+) ![]u8 {
+    if (blob.len < ENCRYPTION_OVERHEAD) return error.InvalidEncryptedRecord;
+
+    const stored_blob_len = std.mem.readInt(u32, blob[OFF_BLOB_LEN..][0..4], .little);
+    const expected_blob_len: u32 = @intCast(blob.len - BLOB_LEN_SIZE);
+    if (stored_blob_len != expected_blob_len) return error.InvalidEncryptedRecord;
+
+    if (!std.mem.eql(u8, blob[OFF_MAGIC..][0..MAGIC_SIZE], &MAGIC)) {
+        return error.InvalidEncryptedRecord;
+    }
+
+    const nonce: [NONCE_SIZE]u8 = blob[OFF_NONCE..][0..NONCE_SIZE].*;
+    const tag: [TAG_SIZE]u8 = blob[OFF_TAG..][0..TAG_SIZE].*;
+    const ciphertext_start = OFF_CIPHERTEXT;
+    const plaintext_len = blob.len - ENCRYPTION_OVERHEAD;
+
+    // Decrypt into the front of blob (non-overlapping with ciphertext at offset 40+).
+    Aes256Gcm.decrypt(blob[0..plaintext_len], blob[ciphertext_start..][0..plaintext_len], tag, &.{}, nonce, key.*) catch {
+        return error.DecryptionFailed;
+    };
+
+    return blob[0..plaintext_len];
+}
+
 /// Return true if `buf` begins with the encrypted record magic bytes at
 /// offset 4.  Does NOT validate blob_len or authenticate the record.
 pub fn isEncrypted(buf: []const u8) bool {
@@ -179,6 +291,12 @@ pub fn loadKeyFromEnv(env_var: []const u8) EncryptionError!?[32]u8 {
 // ============================================================================
 
 const record = @import("record.zig");
+
+// C library functions used by loadKeyFromEnv tests to manipulate environment.
+const c_env = struct {
+    extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+};
 
 test "encrypt/decrypt: round-trip" {
     const allocator = std.testing.allocator;
@@ -266,4 +384,47 @@ test "decryptRecord: truncated blob returns InvalidEncryptedRecord" {
     const truncated = encrypted[0 .. ENCRYPTION_OVERHEAD - 1];
     const result = decryptRecord(allocator, &key, truncated);
     try std.testing.expectError(error.InvalidEncryptedRecord, result);
+}
+
+test "loadKeyFromEnv: returns null when env var is not set" {
+    // Use a name that is extremely unlikely to be set.
+    const result = try loadKeyFromEnv("__ZIGWAL_TEST_KEY_NONEXISTENT_42__");
+    try std.testing.expect(result == null);
+}
+
+test "loadKeyFromEnv: returns InvalidKey for non-hex value" {
+    const env_name: [*:0]const u8 = "__ZIGWAL_TEST_KEY_INVALID__";
+    // Set to a string that is not valid 64-hex-digit.
+    _ = c_env.setenv(env_name, "not-a-hex-key", 1);
+    defer _ = c_env.unsetenv(env_name);
+
+    const result = loadKeyFromEnv("__ZIGWAL_TEST_KEY_INVALID__");
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "loadKeyFromEnv: returns InvalidKey for wrong-length hex" {
+    const env_name: [*:0]const u8 = "__ZIGWAL_TEST_KEY_SHORT__";
+    // Valid hex but only 32 chars (16 bytes) instead of 64 chars (32 bytes).
+    _ = c_env.setenv(env_name, "0123456789abcdef0123456789abcdef", 1);
+    defer _ = c_env.unsetenv(env_name);
+
+    const result = loadKeyFromEnv("__ZIGWAL_TEST_KEY_SHORT__");
+    try std.testing.expectError(error.InvalidKey, result);
+}
+
+test "loadKeyFromEnv: returns key for valid 64-hex-char string" {
+    const env_name: [*:0]const u8 = "__ZIGWAL_TEST_KEY_VALID__";
+    const hex_key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    _ = c_env.setenv(env_name, hex_key, 1);
+    defer _ = c_env.unsetenv(env_name);
+
+    const maybe_key = try loadKeyFromEnv("__ZIGWAL_TEST_KEY_VALID__");
+    try std.testing.expect(maybe_key != null);
+
+    const key = maybe_key.?;
+    // Verify first and last bytes match expected hex decode.
+    try std.testing.expectEqual(@as(u8, 0x00), key[0]);
+    try std.testing.expectEqual(@as(u8, 0x01), key[1]);
+    try std.testing.expectEqual(@as(u8, 0x1e), key[30]);
+    try std.testing.expectEqual(@as(u8, 0x1f), key[31]);
 }

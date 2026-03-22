@@ -22,13 +22,18 @@ const encryption = @import("encryption.zig");
 /// Configuration options for a `WriteAheadLog` instance.
 pub const Options = struct {
     /// Optional AES-256-GCM encryption key.  `null` means plaintext mode.
-    /// Encryption integration is handled by Task 8; this field is reserved.
     encryption_key: ?[32]u8 = null,
 
     /// When `true`, the caller is responsible for calling `sync()` explicitly.
-    /// When `false` (the default), every `append` / `appendBatch` issues an
-    /// `fsync` automatically.
+    /// When `false` (the default), appends are synced automatically according
+    /// to `sync_every_n`.
     manual_sync: bool = false,
+
+    /// When `manual_sync` is `false`, sync after every N appends instead of
+    /// every single append. Defaults to 1 (sync every append, the safest
+    /// option). Values > 1 amortize fsync cost at the risk of losing up to
+    /// N-1 records on crash.
+    sync_every_n: u32 = 1,
 };
 
 // ============================================================================
@@ -46,6 +51,7 @@ pub const WriteAheadLog = struct {
     file_end: u64,
     bytes_since_compact: u64,
     options: Options,
+    appends_since_sync: u32,
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -92,6 +98,7 @@ pub const WriteAheadLog = struct {
             .file_end = info.valid_end,
             .bytes_since_compact = info.valid_end,
             .options = options,
+            .appends_since_sync = 0,
         };
     }
 
@@ -115,16 +122,16 @@ pub const WriteAheadLog = struct {
         const lsn = self.current_lsn;
 
         if (self.options.encryption_key) |*key| {
-            // Encrypt-then-write path: serialize → encrypt → write blob.
-            const plaintext = try record.serialize(self.allocator, lsn, payload);
-            defer self.allocator.free(plaintext);
-
-            const blob = try encryption.encryptRecord(self.allocator, key, plaintext);
-            defer self.allocator.free(blob);
-
-            try self.file.writeAll(blob);
-            self.file_end += blob.len;
-            self.bytes_since_compact += blob.len;
+            // Encrypt-then-write path: stack-buffer for small payloads (PERF-0001).
+            const bytes_written = try encryption.encryptAndWriteToFile(
+                self.file,
+                self.allocator,
+                key,
+                lsn,
+                payload,
+            );
+            self.file_end += bytes_written;
+            self.bytes_since_compact += bytes_written;
         } else {
             // Plaintext path.
             const bytes_written = try record.writeToFile(self.file, self.allocator, lsn, payload);
@@ -133,13 +140,17 @@ pub const WriteAheadLog = struct {
         }
 
         if (!self.options.manual_sync) {
-            try self.file.sync();
+            self.appends_since_sync += 1;
+            if (self.appends_since_sync >= self.options.sync_every_n) {
+                try std.posix.fdatasync(self.file.handle);
+                self.appends_since_sync = 0;
+            }
         }
 
         return lsn;
     }
 
-    /// Append multiple records in a single batch with at most one `fsync`.
+    /// Append multiple records in a single batch with at most one `fdatasync`.
     ///
     /// All records are written before the sync decision is made.  If
     /// `options.manual_sync` is `false` (the default), a single `fsync` is
@@ -152,30 +163,50 @@ pub const WriteAheadLog = struct {
     pub fn appendBatch(self: *WriteAheadLog, payloads: []const []const u8) !u64 {
         std.debug.assert(payloads.len > 0);
 
+        // Compute total buffer size needed for all records (PERF-0002).
+        var total_size: usize = 0;
+        for (payloads) |payload| {
+            const rec_size = record.HEADER_SIZE + payload.len + record.CRC_SIZE;
+            if (self.options.encryption_key != null) {
+                total_size += encryption.ENCRYPTION_OVERHEAD + rec_size;
+            } else {
+                total_size += rec_size;
+            }
+        }
+
+        const buf = try self.allocator.alloc(u8, total_size);
+        defer self.allocator.free(buf);
+
+        var offset: usize = 0;
         var last_lsn: u64 = self.current_lsn;
+
         for (payloads) |payload| {
             self.current_lsn += 1;
             last_lsn = self.current_lsn;
 
+            const rec_size = record.HEADER_SIZE + payload.len + record.CRC_SIZE;
+
             if (self.options.encryption_key) |*key| {
-                const plaintext = try record.serialize(self.allocator, last_lsn, payload);
-                defer self.allocator.free(plaintext);
-
-                const blob = try encryption.encryptRecord(self.allocator, key, plaintext);
-                defer self.allocator.free(blob);
-
-                try self.file.writeAll(blob);
-                self.file_end += blob.len;
-                self.bytes_since_compact += blob.len;
+                const enc_size = encryption.ENCRYPTION_OVERHEAD + rec_size;
+                // Serialize plaintext record into a temp region, then encrypt.
+                // Use the end of `buf` as scratch space for the plaintext.
+                const pt_start = total_size - rec_size;
+                record.serializeInto(buf[pt_start..][0..rec_size], last_lsn, payload);
+                encryption.encryptIntoSlice(buf[offset..][0..enc_size], key, buf[pt_start..][0..rec_size]);
+                offset += enc_size;
             } else {
-                const bytes_written = try record.writeToFile(self.file, self.allocator, last_lsn, payload);
-                self.file_end += bytes_written;
-                self.bytes_since_compact += bytes_written;
+                record.serializeInto(buf[offset..][0..rec_size], last_lsn, payload);
+                offset += rec_size;
             }
         }
 
+        try self.file.writeAll(buf[0..offset]);
+        self.file_end += offset;
+        self.bytes_since_compact += offset;
+
         if (!self.options.manual_sync) {
-            try self.file.sync();
+            try std.posix.fdatasync(self.file.handle);
+            self.appends_since_sync = 0;
         }
 
         return last_lsn;
@@ -183,9 +214,11 @@ pub const WriteAheadLog = struct {
 
     /// Explicitly flush all buffered writes to durable storage.
     ///
+    /// Uses `fdatasync` (metadata-update not needed for appends).
     /// Use this when `options.manual_sync` is `true`.
     pub fn sync(self: *WriteAheadLog) !void {
-        try self.file.sync();
+        try std.posix.fdatasync(self.file.handle);
+        self.appends_since_sync = 0;
     }
 
     /// Remove all records with LSN <= `up_to_lsn` by rewriting the WAL.
@@ -204,6 +237,7 @@ pub const WriteAheadLog = struct {
         // Run the atomic rewrite.  On error, reopen the original file so the
         // WAL remains in a consistent (if unchanged) state.
         const result = compaction.compact(
+            self.allocator,
             self.dir,
             self.filename,
             up_to_lsn,
@@ -331,6 +365,13 @@ pub const WriteAheadLog = struct {
                         .payload_len = std.mem.readInt(u32, peek_buf[8..12], .little),
                     };
 
+                    // Skip records below the requested LSN by seeking past
+                    // payload + CRC without reading them (PERF-0007).
+                    if (hdr_info.lsn <= self.from_lsn) {
+                        try self.file.seekBy(@as(i64, @intCast(@as(usize, hdr_info.payload_len) + record.CRC_SIZE)));
+                        continue;
+                    }
+
                     const maybe_payload = record.readPayloadAndVerify(
                         self.file,
                         self.allocator,
@@ -347,16 +388,10 @@ pub const WriteAheadLog = struct {
                         self.done = true;
                         return null;
                     }
-                    const payload = maybe_payload.?;
-
-                    if (hdr_info.lsn <= self.from_lsn) {
-                        self.allocator.free(payload);
-                        continue;
-                    }
 
                     return Entry{
                         .lsn = hdr_info.lsn,
-                        .payload = payload,
+                        .payload = maybe_payload.?,
                         .allocator = self.allocator,
                     };
                 }
@@ -365,6 +400,8 @@ pub const WriteAheadLog = struct {
 
         /// Read a single encrypted record, given the 12-byte peek that was
         /// already consumed from the file.
+        ///
+        /// Uses in-place decryption to reduce allocations from 3 to 1 (PERF-0004).
         fn readEncryptedEntry(self: *Iterator, peek_buf: *const [12]u8) !?Entry {
             const blob_len = std.mem.readInt(u32, peek_buf[0..4], .little);
             const total_on_disk: usize = encryption.BLOB_LEN_SIZE + @as(usize, blob_len);
@@ -374,25 +411,37 @@ pub const WriteAheadLog = struct {
 
             // Assemble the full encrypted blob.
             const blob_buf = try self.allocator.alloc(u8, total_on_disk);
-            defer self.allocator.free(blob_buf);
+            errdefer self.allocator.free(blob_buf);
 
             @memcpy(blob_buf[0..12], peek_buf);
 
             if (remaining > 0) {
                 const n = try self.file.readAll(blob_buf[12..]);
-                if (n < remaining) return null; // torn write
+                if (n < remaining) {
+                    self.allocator.free(blob_buf);
+                    return null; // torn write
+                }
             }
 
-            // Decrypt the blob to get the inner plaintext record.
+            // Decrypt in-place — plaintext overwrites ciphertext region of blob_buf.
             const key = &self.encryption_key.?;
-            const plaintext = try encryption.decryptRecord(self.allocator, key, blob_buf);
-            defer self.allocator.free(plaintext);
+            const plaintext = encryption.decryptRecordInPlace(key, blob_buf) catch |err| {
+                self.allocator.free(blob_buf);
+                return err;
+            };
 
-            // Deserialize the inner record.
-            const rec = try record.deserialize(plaintext);
+            // Deserialize the inner record from the in-place plaintext.
+            const rec = record.deserialize(plaintext) catch |err| {
+                self.allocator.free(blob_buf);
+                return err;
+            };
 
-            // Copy payload out — the plaintext buffer is freed on return.
-            const payload_copy = try self.allocator.dupe(u8, rec.payload);
+            // Copy only the payload out, then free blob_buf.
+            const payload_copy = self.allocator.dupe(u8, rec.payload) catch |err| {
+                self.allocator.free(blob_buf);
+                return err;
+            };
+            self.allocator.free(blob_buf);
 
             return Entry{
                 .lsn = rec.lsn,

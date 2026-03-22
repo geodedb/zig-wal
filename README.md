@@ -54,21 +54,25 @@ const std = @import("std");
 const wal = @import("wal");
 
 pub fn main() !void {
-    var allocator = std.heap.page_allocator;
+    const allocator = std.heap.page_allocator;
 
-    // Open or create a WAL
-    var log = try wal.WriteAheadLog.init(allocator, "/tmp/my-app.wal", .{});
+    // Open or create a WAL (takes a directory handle + filename)
+    var dir = try std.fs.cwd().openDir("/tmp", .{});
+    defer dir.close();
+
+    var log = try wal.WriteAheadLog.init(allocator, dir, "my-app.wal", .{});
     defer log.deinit();
 
     // Append records (payload is opaque bytes — serialize your own types)
     const lsn1 = try log.append("hello world");
-    const lsn2 = try log.append("second entry");
+    _ = try log.append("second entry");
 
     // Iterate records
-    var iter = log.iterator(0);
-    while (try iter.next()) |*record| {
-        defer record.deinit();
-        std.debug.print("LSN={d} payload={s}\n", .{ record.lsn, record.payload });
+    var iter = try log.iterator(0);
+    defer iter.deinit();
+    while (try iter.next()) |*entry| {
+        defer entry.deinit();
+        std.debug.print("LSN={d} payload={s}\n", .{ entry.lsn, entry.payload });
     }
 
     // Compact (remove records with LSN <= lsn1)
@@ -79,7 +83,7 @@ pub fn main() !void {
 ### With Encryption
 
 ```zig
-var log = try wal.WriteAheadLog.init(allocator, "/tmp/secure.wal", .{
+var log = try wal.WriteAheadLog.init(allocator, dir, "secure.wal", .{
     .encryption_key = my_256_bit_key,
 });
 ```

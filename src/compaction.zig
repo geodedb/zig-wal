@@ -28,8 +28,9 @@ const encryption = @import("encryption.zig");
 // Constants
 // ============================================================================
 
-/// Copy buffer size for the bulk transfer phase (64 KiB).
-const COPY_BUF_SIZE: usize = 64 * 1024;
+/// Copy buffer size for the bulk transfer phase (256 KiB).
+/// Increased from 64 KiB to reduce syscall count for large WALs (PERF-0008).
+const COPY_BUF_SIZE: usize = 256 * 1024;
 
 // ============================================================================
 // Types
@@ -64,6 +65,7 @@ pub const CompactResult = struct {
 /// No CRC validation is performed during scanning — it is assumed that
 /// `recovery.recover` has already validated every record on startup.
 pub fn compact(
+    allocator: std.mem.Allocator,
     dir: std.fs.Dir,
     filename: []const u8,
     up_to_lsn: u64,
@@ -103,18 +105,17 @@ pub fn compact(
 
             // Read the remaining bytes of the encrypted blob.
             const remaining = total_on_disk - 12;
-            const blob_buf = try std.heap.page_allocator.alloc(u8, total_on_disk);
-            defer std.heap.page_allocator.free(blob_buf);
+            const blob_buf = try allocator.alloc(u8, total_on_disk);
+            defer allocator.free(blob_buf);
             @memcpy(blob_buf[0..12], &peek_buf);
             if (remaining > 0) {
                 const n = try src.readAll(blob_buf[12..]);
                 if (n < remaining) break; // torn write
             }
 
-            // Decrypt to extract LSN.
+            // Decrypt in-place to extract LSN — avoids extra allocation (PERF-0003).
             const key = encryption_key.?;
-            const plaintext = encryption.decryptRecord(std.heap.page_allocator, key, blob_buf) catch break;
-            defer std.heap.page_allocator.free(plaintext);
+            const plaintext = encryption.decryptRecordInPlace(key, blob_buf) catch break;
 
             if (plaintext.len < record.HEADER_SIZE) break; // corrupt inner record
             const lsn = std.mem.readInt(u64, plaintext[0..8], .little);
@@ -222,7 +223,7 @@ test "compact: removes records below watermark" {
     wf.close();
 
     // Compact: keep only records with LSN > 3.
-    const result = try compact(tmp_dir.dir, "wal.log", 3, null);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, null);
     try std.testing.expectEqual(@as(u64, 2), result.records_kept);
 
     // Re-open and verify only LSNs 4 and 5 remain.
@@ -255,7 +256,7 @@ test "compact: all records removed" {
     wf.close();
 
     // Compact above max LSN → all records removed.
-    const result = try compact(tmp_dir.dir, "wal.log", 100, null);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 100, null);
     try std.testing.expectEqual(@as(u64, 0), result.records_kept);
     try std.testing.expectEqual(@as(u64, 0), result.new_size);
 
@@ -280,7 +281,7 @@ test "compact: no records removed" {
     const original_stat = try tmp_dir.dir.statFile("wal.log");
 
     // Compact at watermark 0 → all records have LSN > 0, so all kept.
-    const result = try compact(tmp_dir.dir, "wal.log", 0, null);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 0, null);
     try std.testing.expectEqual(@as(u64, 3), result.records_kept);
     try std.testing.expectEqual(original_stat.size, result.new_size);
 
@@ -302,7 +303,7 @@ test "compact: append after compact works" {
     wf.close();
 
     // Compact: keep LSN > 2 (keeps LSNs 3 and 4).
-    const result = try compact(tmp_dir.dir, "wal.log", 2, null);
+    const result = try compact(allocator, tmp_dir.dir, "wal.log", 2, null);
     try std.testing.expectEqual(@as(u64, 2), result.records_kept);
 
     // Append two more records: LSN 5 and 6.
