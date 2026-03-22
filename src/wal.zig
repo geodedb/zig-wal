@@ -223,8 +223,19 @@ pub const WriteAheadLog = struct {
     ///
     /// Returns the LSN assigned to this record.
     pub fn append(self: *WriteAheadLog, payload: []const u8) !u64 {
+        return self.appendWithLsn(self.current_lsn + 1, payload);
+    }
+
+    /// Append a single record with a caller-provided LSN.
+    ///
+    /// The provided LSN must be strictly greater than the current LSN
+    /// (monotonicity invariant). Returns `error.InvalidLsn` if violated.
+    ///
+    /// This is useful for consumers that maintain their own sequence
+    /// numbering (e.g., Raft log indices) and need the WAL LSN to match.
+    pub fn appendWithLsn(self: *WriteAheadLog, lsn: u64, payload: []const u8) !u64 {
         if (self.poisoned) return error.WalPoisoned;
-        const lsn = self.current_lsn + 1;
+        if (lsn <= self.current_lsn) return error.InvalidLsn;
 
         // Record file position before write so we can truncate on error (SEC-0030).
         const pre_write_pos = self.file_end;
@@ -284,6 +295,41 @@ pub const WriteAheadLog = struct {
         if (self.poisoned) return error.WalPoisoned;
         if (payloads.len == 0) return error.EmptyBatch; // SEC-0023
 
+        // Build auto-incrementing LSN array.
+        const lsns = try self.allocator.alloc(u64, payloads.len);
+        defer self.allocator.free(lsns);
+        var next_lsn = self.current_lsn;
+        for (lsns) |*l| {
+            next_lsn += 1;
+            l.* = next_lsn;
+        }
+
+        return self.appendBatchWithLsns(lsns, payloads);
+    }
+
+    /// Append multiple records with caller-provided LSNs in a single batch.
+    ///
+    /// Each LSN must be strictly greater than the previous one and greater
+    /// than the current WAL LSN (monotonicity invariant). Returns
+    /// `error.InvalidLsn` if violated.
+    ///
+    /// `lsns` and `payloads` must have the same length; returns
+    /// `error.EmptyBatch` if both are empty.
+    ///
+    /// This is useful for consumers that maintain their own sequence
+    /// numbering (e.g., Raft log indices) and need WAL LSNs to match.
+    pub fn appendBatchWithLsns(self: *WriteAheadLog, lsns: []const u64, payloads: []const []const u8) !u64 {
+        if (self.poisoned) return error.WalPoisoned;
+        if (payloads.len == 0) return error.EmptyBatch; // SEC-0023
+        if (lsns.len != payloads.len) return error.InvalidLsn;
+
+        // Validate monotonicity of provided LSNs.
+        var prev_lsn = self.current_lsn;
+        for (lsns) |lsn| {
+            if (lsn <= prev_lsn) return error.InvalidLsn;
+            prev_lsn = lsn;
+        }
+
         // Compute total buffer size needed for all records (PERF-0002).
         var total_size: usize = 0;
         for (payloads) |payload| {
@@ -307,11 +353,10 @@ pub const WriteAheadLog = struct {
         }
 
         var offset: usize = 0;
-        const saved_lsn = self.current_lsn;
-        var last_lsn: u64 = saved_lsn;
+        var last_lsn: u64 = self.current_lsn;
 
-        for (payloads) |payload| {
-            last_lsn += 1;
+        for (payloads, 0..) |payload, i| {
+            last_lsn = lsns[i];
 
             const rec_size = record.HEADER_SIZE + payload.len + record.CRC_SIZE;
 
@@ -1207,4 +1252,257 @@ test "zero_copy_compaction: compact uses kernel transfer (PERF-0014)" {
     // New append should work.
     const lsn5 = try wal.append("five");
     try std.testing.expectEqual(@as(u64, 5), lsn5);
+}
+
+// =========================================================================
+// Tests: appendWithLsn / appendBatchWithLsns (caller-provided LSNs)
+// =========================================================================
+
+test "appendWithLsn: basic append with caller-provided LSNs" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+    defer wal.deinit();
+
+    // Append with explicit LSNs (e.g., Raft log indices starting at 100).
+    const lsn1 = try wal.appendWithLsn(100, "entry-100");
+    try std.testing.expectEqual(@as(u64, 100), lsn1);
+    try std.testing.expectEqual(@as(u64, 100), wal.currentLsn());
+
+    const lsn2 = try wal.appendWithLsn(101, "entry-101");
+    try std.testing.expectEqual(@as(u64, 101), lsn2);
+
+    // Verify records are readable with correct LSNs.
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+
+    var e1 = try iter.next();
+    try std.testing.expect(e1 != null);
+    defer e1.?.deinit();
+    try std.testing.expectEqual(@as(u64, 100), e1.?.lsn);
+    try std.testing.expectEqualStrings("entry-100", e1.?.payload);
+
+    var e2 = try iter.next();
+    try std.testing.expect(e2 != null);
+    defer e2.?.deinit();
+    try std.testing.expectEqual(@as(u64, 101), e2.?.lsn);
+    try std.testing.expectEqualStrings("entry-101", e2.?.payload);
+
+    const eof = try iter.next();
+    try std.testing.expect(eof == null);
+}
+
+test "appendWithLsn: rejects non-monotonic LSN" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+    defer wal.deinit();
+
+    _ = try wal.appendWithLsn(10, "first");
+
+    // Same LSN should fail.
+    try std.testing.expectError(error.InvalidLsn, wal.appendWithLsn(10, "dup"));
+
+    // Lower LSN should fail.
+    try std.testing.expectError(error.InvalidLsn, wal.appendWithLsn(5, "lower"));
+
+    // Zero LSN should fail.
+    try std.testing.expectError(error.InvalidLsn, wal.appendWithLsn(0, "zero"));
+
+    // Higher LSN should succeed (gaps are allowed).
+    const lsn = try wal.appendWithLsn(1000, "jump");
+    try std.testing.expectEqual(@as(u64, 1000), lsn);
+}
+
+test "appendWithLsn: survives crash recovery with non-sequential LSNs" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Write records with gaps in LSN sequence (simulating snapshot restore).
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+        defer wal.deinit();
+
+        _ = try wal.appendWithLsn(500, "after-snapshot-a");
+        _ = try wal.appendWithLsn(501, "after-snapshot-b");
+        _ = try wal.appendWithLsn(502, "after-snapshot-c");
+    }
+
+    // Reopen — recovery should find all 3 records with correct LSNs.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+        defer wal.deinit();
+
+        try std.testing.expectEqual(@as(u64, 502), wal.currentLsn());
+
+        // Continue appending after recovery.
+        const lsn = try wal.appendWithLsn(503, "after-recovery");
+        try std.testing.expectEqual(@as(u64, 503), lsn);
+
+        // Verify all 4 records.
+        var iter = try wal.iterator(0);
+        defer iter.deinit();
+
+        var count: u64 = 0;
+        while (true) {
+            var entry = try iter.next() orelse break;
+            defer entry.deinit();
+            count += 1;
+        }
+        try std.testing.expectEqual(@as(u64, 4), count);
+    }
+}
+
+test "appendWithLsn: compact works with caller-provided LSNs" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+    defer wal.deinit();
+
+    _ = try wal.appendWithLsn(100, "a");
+    _ = try wal.appendWithLsn(101, "b");
+    _ = try wal.appendWithLsn(102, "c");
+    _ = try wal.appendWithLsn(103, "d");
+
+    // Compact up to LSN 101 — should remove records 100 and 101.
+    try wal.compact(101);
+
+    // Verify only LSN 102 and 103 remain.
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+
+    var e1 = try iter.next();
+    try std.testing.expect(e1 != null);
+    defer e1.?.deinit();
+    try std.testing.expectEqual(@as(u64, 102), e1.?.lsn);
+
+    var e2 = try iter.next();
+    try std.testing.expect(e2 != null);
+    defer e2.?.deinit();
+    try std.testing.expectEqual(@as(u64, 103), e2.?.lsn);
+
+    const eof = try iter.next();
+    try std.testing.expect(eof == null);
+
+    // Continue appending after compact.
+    const lsn = try wal.appendWithLsn(104, "e");
+    try std.testing.expectEqual(@as(u64, 104), lsn);
+}
+
+test "appendBatchWithLsns: basic batch with caller-provided LSNs" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+    defer wal.deinit();
+
+    const lsns = [_]u64{ 50, 51, 52 };
+    const payloads = [_][]const u8{ "alpha", "beta", "gamma" };
+    const last = try wal.appendBatchWithLsns(&lsns, &payloads);
+    try std.testing.expectEqual(@as(u64, 52), last);
+    try std.testing.expectEqual(@as(u64, 52), wal.currentLsn());
+
+    // Verify all records.
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+
+    var e1 = try iter.next();
+    try std.testing.expect(e1 != null);
+    defer e1.?.deinit();
+    try std.testing.expectEqual(@as(u64, 50), e1.?.lsn);
+    try std.testing.expectEqualStrings("alpha", e1.?.payload);
+
+    var e2 = try iter.next();
+    try std.testing.expect(e2 != null);
+    defer e2.?.deinit();
+    try std.testing.expectEqual(@as(u64, 51), e2.?.lsn);
+
+    var e3 = try iter.next();
+    try std.testing.expect(e3 != null);
+    defer e3.?.deinit();
+    try std.testing.expectEqual(@as(u64, 52), e3.?.lsn);
+
+    const eof = try iter.next();
+    try std.testing.expect(eof == null);
+}
+
+test "appendBatchWithLsns: rejects non-monotonic LSNs" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+    defer wal.deinit();
+
+    // Non-monotonic within batch.
+    const bad_lsns = [_]u64{ 10, 9, 11 };
+    const payloads = [_][]const u8{ "a", "b", "c" };
+    try std.testing.expectError(error.InvalidLsn, wal.appendBatchWithLsns(&bad_lsns, &payloads));
+
+    // Duplicate within batch.
+    const dup_lsns = [_]u64{ 10, 10, 11 };
+    try std.testing.expectError(error.InvalidLsn, wal.appendBatchWithLsns(&dup_lsns, &payloads));
+
+    // Length mismatch.
+    const short_lsns = [_]u64{ 10, 11 };
+    try std.testing.expectError(error.InvalidLsn, wal.appendBatchWithLsns(&short_lsns, &payloads));
+
+    // Valid batch should still work after rejections.
+    const good_lsns = [_]u64{ 10, 11, 12 };
+    const last = try wal.appendBatchWithLsns(&good_lsns, &payloads);
+    try std.testing.expectEqual(@as(u64, 12), last);
+}
+
+test "appendBatchWithLsns: rejects LSNs not greater than current" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+    defer wal.deinit();
+
+    _ = try wal.appendWithLsn(100, "existing");
+
+    // Batch starting at or below current LSN should fail.
+    const bad_lsns = [_]u64{ 100, 101, 102 };
+    const payloads = [_][]const u8{ "a", "b", "c" };
+    try std.testing.expectError(error.InvalidLsn, wal.appendBatchWithLsns(&bad_lsns, &payloads));
+
+    // Batch starting above current LSN should succeed.
+    const good_lsns = [_]u64{ 101, 102, 103 };
+    const last = try wal.appendBatchWithLsns(&good_lsns, &payloads);
+    try std.testing.expectEqual(@as(u64, 103), last);
+}
+
+test "appendWithLsn: mixed with auto-increment append" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
+    defer wal.deinit();
+
+    // Start with caller-provided LSN.
+    _ = try wal.appendWithLsn(42, "explicit");
+    try std.testing.expectEqual(@as(u64, 42), wal.currentLsn());
+
+    // Auto-increment continues from 42.
+    const auto_lsn = try wal.append("auto");
+    try std.testing.expectEqual(@as(u64, 43), auto_lsn);
+
+    // Explicit LSN must be > 43.
+    const explicit_lsn = try wal.appendWithLsn(100, "jump");
+    try std.testing.expectEqual(@as(u64, 100), explicit_lsn);
+
+    // Auto-increment continues from 100.
+    const auto_lsn2 = try wal.append("auto2");
+    try std.testing.expectEqual(@as(u64, 101), auto_lsn2);
 }
