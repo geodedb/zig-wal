@@ -36,7 +36,7 @@ stages:
 .install-zig: &install-zig
   - |
     if [ ! -f "zig-linux-x86_64-${ZIG_VERSION}/zig" ]; then
-      command -v curl >/dev/null 2>&1 || { apt-get update && apt-get install -y --no-install-recommends curl xz-utils; }
+      command -v curl >/dev/null 2>&1 || { apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates; }
       curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
       tar -xf zig.tar.xz
       rm zig.tar.xz
