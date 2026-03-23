@@ -7,7 +7,7 @@
 //! - Payload-agnostic: stores opaque `[]const u8` blobs.
 //! - LSN-based: every record gets a monotonically increasing Log Sequence Number.
 //! - Single-file: no segment rotation; compaction rewrites the file atomically.
-//! - Not thread-safe: callers are responsible for external synchronisation.
+//! - Thread-safe: all public methods are protected by an internal mutex.
 
 const std = @import("std");
 const record = @import("record.zig");
@@ -70,6 +70,12 @@ pub const Options = struct {
 
 /// A Write-Ahead Log that appends framed, CRC-verified records to a single
 /// file and recovers cleanly after a crash.
+///
+/// Thread safety: all public methods that mutate WAL state are protected by
+/// an internal mutex.  Concurrent appends, syncs, and compactions are safe.
+/// Read-only getters (`currentLsn`, `bytesSinceCompact`) also acquire the
+/// lock to ensure a consistent view.  The `iterator` method opens an
+/// independent file handle and does not hold the lock during iteration.
 pub const WriteAheadLog = struct {
     allocator: std.mem.Allocator,
     dir: std.fs.Dir,
@@ -85,6 +91,9 @@ pub const WriteAheadLog = struct {
     /// will return `error.WalPoisoned`. Set when the file handle cannot
     /// be reopened after compaction (SEC-0008).
     poisoned: bool = false,
+    /// Internal mutex protecting all mutable state.  Acquired by append,
+    /// appendBatch, sync, compact, and read-only getters.
+    mu: std.Thread.Mutex = .{},
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -222,8 +231,11 @@ pub const WriteAheadLog = struct {
     /// `options.manual_sync` is true — issues an `fsync`.
     ///
     /// Returns the LSN assigned to this record.
+    /// Thread-safe: acquires internal mutex.
     pub fn append(self: *WriteAheadLog, payload: []const u8) !u64 {
-        return self.appendWithLsn(self.current_lsn + 1, payload);
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.appendWithLsnLocked(self.current_lsn + 1, payload);
     }
 
     /// Append a single record with a caller-provided LSN.
@@ -233,7 +245,16 @@ pub const WriteAheadLog = struct {
     ///
     /// This is useful for consumers that maintain their own sequence
     /// numbering (e.g., Raft log indices) and need the WAL LSN to match.
+    /// Thread-safe: acquires internal mutex.
     pub fn appendWithLsn(self: *WriteAheadLog, lsn: u64, payload: []const u8) !u64 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.appendWithLsnLocked(lsn, payload);
+    }
+
+    /// Internal unlocked implementation of appendWithLsn.
+    /// Caller must hold `self.mu`.
+    fn appendWithLsnLocked(self: *WriteAheadLog, lsn: u64, payload: []const u8) !u64 {
         if (self.poisoned) return error.WalPoisoned;
         if (lsn <= self.current_lsn) return error.InvalidLsn;
 
@@ -291,7 +312,10 @@ pub const WriteAheadLog = struct {
     ///
     /// Returns the LSN assigned to the last record in the batch.
     /// Errors if `payloads` is empty (there is nothing to flush).
+    /// Thread-safe: acquires internal mutex.
     pub fn appendBatch(self: *WriteAheadLog, payloads: []const []const u8) !u64 {
+        self.mu.lock();
+        defer self.mu.unlock();
         if (self.poisoned) return error.WalPoisoned;
         if (payloads.len == 0) return error.EmptyBatch; // SEC-0023
 
@@ -304,7 +328,7 @@ pub const WriteAheadLog = struct {
             l.* = next_lsn;
         }
 
-        return self.appendBatchWithLsns(lsns, payloads);
+        return self.appendBatchWithLsnsLocked(lsns, payloads);
     }
 
     /// Append multiple records with caller-provided LSNs in a single batch.
@@ -318,7 +342,16 @@ pub const WriteAheadLog = struct {
     ///
     /// This is useful for consumers that maintain their own sequence
     /// numbering (e.g., Raft log indices) and need WAL LSNs to match.
+    /// Thread-safe: acquires internal mutex.
     pub fn appendBatchWithLsns(self: *WriteAheadLog, lsns: []const u64, payloads: []const []const u8) !u64 {
+        self.mu.lock();
+        defer self.mu.unlock();
+        return self.appendBatchWithLsnsLocked(lsns, payloads);
+    }
+
+    /// Internal unlocked implementation of appendBatchWithLsns.
+    /// Caller must hold `self.mu`.
+    fn appendBatchWithLsnsLocked(self: *WriteAheadLog, lsns: []const u64, payloads: []const []const u8) !u64 {
         if (self.poisoned) return error.WalPoisoned;
         if (payloads.len == 0) return error.EmptyBatch; // SEC-0023
         if (lsns.len != payloads.len) return error.InvalidLsn;
@@ -405,7 +438,10 @@ pub const WriteAheadLog = struct {
     ///
     /// Uses `fdatasync` (metadata-update not needed for appends).
     /// Use this when `options.manual_sync` is `true`.
+    /// Thread-safe: acquires internal mutex.
     pub fn sync(self: *WriteAheadLog) !void {
+        self.mu.lock();
+        defer self.mu.unlock();
         if (self.poisoned) return error.WalPoisoned;
         try std.posix.fdatasync(self.file.handle);
         self.appends_since_sync = 0;
@@ -423,7 +459,10 @@ pub const WriteAheadLog = struct {
     /// If the file handle cannot be reopened after either a failed or
     /// successful compaction, the WAL is marked poisoned and subsequent
     /// operations will return `error.WalPoisoned` (SEC-0008).
+    /// Thread-safe: acquires internal mutex.
     pub fn compact(self: *WriteAheadLog, up_to_lsn: u64) !void {
+        self.mu.lock();
+        defer self.mu.unlock();
         if (self.poisoned) return error.WalPoisoned;
 
         // Close the current file handle — compaction will rename a new file
@@ -486,13 +525,19 @@ pub const WriteAheadLog = struct {
     // -------------------------------------------------------------------------
 
     /// Return the LSN of the most recently appended record (0 if empty).
-    pub fn currentLsn(self: *const WriteAheadLog) u64 {
+    /// Thread-safe: acquires internal mutex.
+    pub fn currentLsn(self: *WriteAheadLog) u64 {
+        self.mu.lock();
+        defer self.mu.unlock();
         return self.current_lsn;
     }
 
     /// Return the number of bytes written since the last compaction (or since
     /// the file was first opened, if it has never been compacted).
-    pub fn bytesSinceCompact(self: *const WriteAheadLog) u64 {
+    /// Thread-safe: acquires internal mutex.
+    pub fn bytesSinceCompact(self: *WriteAheadLog) u64 {
+        self.mu.lock();
+        defer self.mu.unlock();
         return self.bytes_since_compact;
     }
 
@@ -504,13 +549,17 @@ pub const WriteAheadLog = struct {
     ///
     /// The iterator uses an independent file handle so it does not disturb the
     /// write position.  Call `Iterator.deinit` when done.
-    pub fn iterator(self: *const WriteAheadLog, from_lsn: u64) !Iterator {
+    /// Thread-safe: acquires internal mutex briefly to snapshot configuration.
+    pub fn iterator(self: *WriteAheadLog, from_lsn: u64) !Iterator {
+        self.mu.lock();
+        const enc_key = if (self.options.encryption_key) |k| k else null;
+        self.mu.unlock();
         const read_file = try self.dir.openFile(self.filename, .{ .mode = .read_only });
         return Iterator.init(
             self.allocator,
             read_file,
             from_lsn,
-            if (self.options.encryption_key) |k| k else null,
+            enc_key,
         );
     }
 
