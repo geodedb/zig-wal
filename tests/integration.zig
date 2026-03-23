@@ -338,3 +338,450 @@ test "lifecycle: iterator from_lsn skips earlier records" {
     // No more records.
     try std.testing.expect((try iter.next()) == null);
 }
+
+// ============================================================================
+// appendWithLsn / appendBatchWithLsns Tests
+// ============================================================================
+
+test "lifecycle: appendWithLsn 100 records with Raft-style indices, close, reopen, verify" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Phase 1: simulate a Raft node that had a snapshot at index 499,
+    // so new entries start at 500. Write 100 records with LSNs 500-599.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+
+        var i: u64 = 500;
+        while (i <= 599) : (i += 1) {
+            var payload_buf: [32]u8 = undefined;
+            const payload = try std.fmt.bufPrint(&payload_buf, "entry-{}", .{i});
+            const lsn = try log.appendWithLsn(i, payload);
+            try std.testing.expectEqual(i, lsn);
+        }
+
+        try std.testing.expectEqual(@as(u64, 599), log.currentLsn());
+    }
+
+    // Phase 2: reopen, verify LSN, iterate and verify all 100 records.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 599), log.currentLsn());
+
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        var expected_lsn: u64 = 500;
+        while (try iter.next()) |entry| {
+            var e = entry;
+            defer e.deinit();
+
+            try std.testing.expectEqual(expected_lsn, e.lsn);
+
+            var payload_buf: [32]u8 = undefined;
+            const expected_payload = try std.fmt.bufPrint(&payload_buf, "entry-{}", .{expected_lsn});
+            try std.testing.expectEqualSlices(u8, expected_payload, e.payload);
+
+            expected_lsn += 1;
+        }
+
+        try std.testing.expectEqual(@as(u64, 600), expected_lsn);
+    }
+}
+
+test "lifecycle: appendWithLsn, compact at LSN, append more, verify continuity" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Phase 1: write entries 100-109, compact at 104, write 110-114, verify.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+
+        // Write entries 100-109.
+        var i: u64 = 100;
+        while (i <= 109) : (i += 1) {
+            var payload_buf: [16]u8 = undefined;
+            const payload = try std.fmt.bufPrint(&payload_buf, "e{}", .{i});
+            _ = try log.appendWithLsn(i, payload);
+        }
+
+        // Compact at LSN 104 — removes entries 100-104.
+        try log.compact(104);
+
+        // Write entries 110-114.
+        i = 110;
+        while (i <= 114) : (i += 1) {
+            var payload_buf: [16]u8 = undefined;
+            const payload = try std.fmt.bufPrint(&payload_buf, "e{}", .{i});
+            _ = try log.appendWithLsn(i, payload);
+        }
+
+        // Verify only entries 105-114 remain.
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        var expected_lsn: u64 = 105;
+        while (try iter.next()) |entry| {
+            var e = entry;
+            defer e.deinit();
+
+            try std.testing.expectEqual(expected_lsn, e.lsn);
+
+            var payload_buf: [16]u8 = undefined;
+            const expected_payload = try std.fmt.bufPrint(&payload_buf, "e{}", .{expected_lsn});
+            try std.testing.expectEqualSlices(u8, expected_payload, e.payload);
+
+            expected_lsn += 1;
+        }
+
+        try std.testing.expectEqual(@as(u64, 115), expected_lsn);
+    }
+
+    // Phase 2: reopen, verify same state persists.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 114), log.currentLsn());
+
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        var expected_lsn: u64 = 105;
+        while (try iter.next()) |entry| {
+            var e = entry;
+            defer e.deinit();
+
+            try std.testing.expectEqual(expected_lsn, e.lsn);
+
+            var payload_buf: [16]u8 = undefined;
+            const expected_payload = try std.fmt.bufPrint(&payload_buf, "e{}", .{expected_lsn});
+            try std.testing.expectEqualSlices(u8, expected_payload, e.payload);
+
+            expected_lsn += 1;
+        }
+
+        try std.testing.expectEqual(@as(u64, 115), expected_lsn);
+    }
+}
+
+test "lifecycle: appendBatchWithLsns, close, reopen, verify" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Phase 1: write 3 batches of 10 entries with LSN ranges
+    // 1000-1009, 1010-1019, 1020-1029.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+
+        // Batch 1: LSNs 1000-1009.
+        var lsns1: [10]u64 = undefined;
+        var payloads1: [10][]const u8 = undefined;
+        var bufs1: [10][32]u8 = undefined;
+        for (0..10) |j| {
+            lsns1[j] = 1000 + @as(u64, @intCast(j));
+            const payload = std.fmt.bufPrint(&bufs1[j], "batch1-{}", .{j}) catch unreachable;
+            payloads1[j] = payload;
+        }
+        const last1 = try log.appendBatchWithLsns(&lsns1, &payloads1);
+        try std.testing.expectEqual(@as(u64, 1009), last1);
+
+        // Batch 2: LSNs 1010-1019.
+        var lsns2: [10]u64 = undefined;
+        var payloads2: [10][]const u8 = undefined;
+        var bufs2: [10][32]u8 = undefined;
+        for (0..10) |j| {
+            lsns2[j] = 1010 + @as(u64, @intCast(j));
+            const payload = std.fmt.bufPrint(&bufs2[j], "batch2-{}", .{j}) catch unreachable;
+            payloads2[j] = payload;
+        }
+        const last2 = try log.appendBatchWithLsns(&lsns2, &payloads2);
+        try std.testing.expectEqual(@as(u64, 1019), last2);
+
+        // Batch 3: LSNs 1020-1029.
+        var lsns3: [10]u64 = undefined;
+        var payloads3: [10][]const u8 = undefined;
+        var bufs3: [10][32]u8 = undefined;
+        for (0..10) |j| {
+            lsns3[j] = 1020 + @as(u64, @intCast(j));
+            const payload = std.fmt.bufPrint(&bufs3[j], "batch3-{}", .{j}) catch unreachable;
+            payloads3[j] = payload;
+        }
+        const last3 = try log.appendBatchWithLsns(&lsns3, &payloads3);
+        try std.testing.expectEqual(@as(u64, 1029), last3);
+
+        try std.testing.expectEqual(@as(u64, 1029), log.currentLsn());
+    }
+
+    // Phase 2: reopen and verify all 30 records.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 1029), log.currentLsn());
+
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        var count: usize = 0;
+        var prev_lsn: u64 = 999;
+        while (try iter.next()) |entry| {
+            var e = entry;
+            defer e.deinit();
+
+            try std.testing.expect(e.lsn > prev_lsn);
+            try std.testing.expectEqual(@as(u64, 1000 + count), e.lsn);
+            prev_lsn = e.lsn;
+            count += 1;
+        }
+
+        try std.testing.expectEqual(@as(usize, 30), count);
+    }
+}
+
+test "lifecycle: appendWithLsn large payload (128KB) with non-sequential LSN" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const payload_size = 128 * 1024;
+    const large_payload = try allocator.alloc(u8, payload_size);
+    defer allocator.free(large_payload);
+    @memset(large_payload, 0xAB);
+
+    // Write a 128KB payload at LSN 999999 and close.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+        const lsn = try log.appendWithLsn(999999, large_payload);
+        try std.testing.expectEqual(@as(u64, 999999), lsn);
+    }
+
+    // Reopen and verify payload survives recovery at correct LSN.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 999999), log.currentLsn());
+
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        var maybe_entry = try iter.next();
+        try std.testing.expect(maybe_entry != null);
+        defer maybe_entry.?.deinit();
+
+        try std.testing.expectEqual(@as(u64, 999999), maybe_entry.?.lsn);
+        try std.testing.expectEqual(payload_size, maybe_entry.?.payload.len);
+
+        for (maybe_entry.?.payload) |byte| {
+            try std.testing.expectEqual(@as(u8, 0xAB), byte);
+        }
+
+        const eof = try iter.next();
+        try std.testing.expect(eof == null);
+    }
+}
+
+test "lifecycle: appendWithLsn with manual_sync" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Phase 1: write 5 entries with manual_sync using appendWithLsn, sync, close.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .manual_sync = true,
+        });
+        defer log.deinit();
+
+        var i: u64 = 50;
+        while (i <= 54) : (i += 1) {
+            var payload_buf: [16]u8 = undefined;
+            const payload = try std.fmt.bufPrint(&payload_buf, "ms-{}", .{i});
+            _ = try log.appendWithLsn(i, payload);
+        }
+
+        try log.sync();
+    }
+
+    // Phase 2: reopen and verify all 5 entries survive.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .manual_sync = true,
+        });
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 54), log.currentLsn());
+
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        var expected_lsn: u64 = 50;
+        while (try iter.next()) |entry| {
+            var e = entry;
+            defer e.deinit();
+
+            try std.testing.expectEqual(expected_lsn, e.lsn);
+
+            var payload_buf: [16]u8 = undefined;
+            const expected_payload = try std.fmt.bufPrint(&payload_buf, "ms-{}", .{expected_lsn});
+            try std.testing.expectEqualSlices(u8, expected_payload, e.payload);
+
+            expected_lsn += 1;
+        }
+
+        try std.testing.expectEqual(@as(u64, 55), expected_lsn);
+    }
+}
+
+test "lifecycle: mixed append and appendWithLsn interleaving" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Phase 1: interleave append, appendWithLsn, appendBatch, appendBatchWithLsns.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+
+        // appendWithLsn(100, "a")
+        const lsn1 = try log.appendWithLsn(100, "a");
+        try std.testing.expectEqual(@as(u64, 100), lsn1);
+
+        // append("b") -> should get LSN 101
+        const lsn2 = try log.append("b");
+        try std.testing.expectEqual(@as(u64, 101), lsn2);
+
+        // appendWithLsn(200, "c") -> gap to 200
+        const lsn3 = try log.appendWithLsn(200, "c");
+        try std.testing.expectEqual(@as(u64, 200), lsn3);
+
+        // append("d") -> should get LSN 201
+        const lsn4 = try log.append("d");
+        try std.testing.expectEqual(@as(u64, 201), lsn4);
+
+        // appendBatch(["e","f"]) -> should get LSNs 202, 203
+        const payloads_ef = [_][]const u8{ "e", "f" };
+        const lsn5 = try log.appendBatch(&payloads_ef);
+        try std.testing.expectEqual(@as(u64, 203), lsn5);
+
+        // appendBatchWithLsns([300,301], ["g","h"]) -> gap to 300
+        const batch_lsns = [_]u64{ 300, 301 };
+        const batch_payloads = [_][]const u8{ "g", "h" };
+        const lsn6 = try log.appendBatchWithLsns(&batch_lsns, &batch_payloads);
+        try std.testing.expectEqual(@as(u64, 301), lsn6);
+
+        try std.testing.expectEqual(@as(u64, 301), log.currentLsn());
+    }
+
+    // Phase 2: reopen, verify all 8 records with correct LSNs and payloads.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 301), log.currentLsn());
+
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        const expected = [_]struct { lsn: u64, payload: []const u8 }{
+            .{ .lsn = 100, .payload = "a" },
+            .{ .lsn = 101, .payload = "b" },
+            .{ .lsn = 200, .payload = "c" },
+            .{ .lsn = 201, .payload = "d" },
+            .{ .lsn = 202, .payload = "e" },
+            .{ .lsn = 203, .payload = "f" },
+            .{ .lsn = 300, .payload = "g" },
+            .{ .lsn = 301, .payload = "h" },
+        };
+
+        for (expected) |exp| {
+            var maybe_entry = try iter.next();
+            try std.testing.expect(maybe_entry != null);
+            defer maybe_entry.?.deinit();
+            try std.testing.expectEqual(exp.lsn, maybe_entry.?.lsn);
+            try std.testing.expectEqualSlices(u8, exp.payload, maybe_entry.?.payload);
+        }
+
+        const eof = try iter.next();
+        try std.testing.expect(eof == null);
+    }
+}
+
+test "lifecycle: appendWithLsn with checkpoint acceleration" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Phase 1: write 50 records with LSNs 1000-1049 using appendWithLsn,
+    // checkpoint enabled. Close writes checkpoint.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .checkpoint = true,
+        });
+        defer log.deinit();
+
+        var i: u64 = 1000;
+        while (i <= 1049) : (i += 1) {
+            var payload_buf: [32]u8 = undefined;
+            const payload = try std.fmt.bufPrint(&payload_buf, "ckpt-{}", .{i});
+            _ = try log.appendWithLsn(i, payload);
+        }
+
+        try std.testing.expectEqual(@as(u64, 1049), log.currentLsn());
+    }
+
+    // Phase 2: reopen with checkpoint, verify, write one more, close again.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .checkpoint = true,
+        });
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 1049), log.currentLsn());
+
+        // Write one more at LSN 1050.
+        const lsn = try log.appendWithLsn(1050, "ckpt-1050");
+        try std.testing.expectEqual(@as(u64, 1050), lsn);
+    }
+
+    // Phase 3: reopen again, verify all 51 records.
+    {
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+            .checkpoint = true,
+        });
+        defer log.deinit();
+
+        try std.testing.expectEqual(@as(u64, 1050), log.currentLsn());
+
+        var iter = try log.iterator(0);
+        defer iter.deinit();
+
+        var count: usize = 0;
+        var expected_lsn: u64 = 1000;
+        while (try iter.next()) |entry| {
+            var e = entry;
+            defer e.deinit();
+
+            try std.testing.expectEqual(expected_lsn, e.lsn);
+
+            var payload_buf: [32]u8 = undefined;
+            const expected_payload = try std.fmt.bufPrint(&payload_buf, "ckpt-{}", .{expected_lsn});
+            try std.testing.expectEqualSlices(u8, expected_payload, e.payload);
+
+            expected_lsn += 1;
+            count += 1;
+        }
+
+        try std.testing.expectEqual(@as(usize, 51), count);
+    }
+}
