@@ -39,10 +39,11 @@ pub const MAX_PAYLOAD_SIZE: u64 = std.math.maxInt(u32);
 /// not enforce it (callers control their own payload sizes).
 pub const MAX_RECORD_SIZE: usize = 16 * 1024 * 1024;
 
-// The WAL assumes usize is at least 64-bit so that u32 payload_len + constant
-// header/CRC sizes cannot overflow in record-size guards (QA-0031).
+// Verify that MAX_RECORD_SIZE + header/CRC overhead fits in usize on all
+// targets (including 32-bit ARM). This replaces the former 64-bit-only
+// assertion (QA-0031).
 comptime {
-    std.debug.assert(@sizeOf(usize) >= 8);
+    std.debug.assert(MAX_RECORD_SIZE <= std.math.maxInt(usize) - HEADER_SIZE - CRC_SIZE);
 }
 
 /// Stack buffer threshold: payloads at or below this size use stack allocation
