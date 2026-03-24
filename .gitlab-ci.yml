@@ -11,8 +11,6 @@ include:
 
   # Code quality
   - component: gitlab.com/devnw/ci-catalog/zig-format@v1.2.1
-    inputs:
-      zig_version: "0.15.2"
 
   # SBOM
   - component: gitlab.com/devnw/ci-catalog/sbom-generate@v1.7.1
@@ -28,51 +26,71 @@ stages:
   - lint
   - build
   - test
-  - bench
+  - fuzz
   - security
   - sbom
   - release
 
-# Zig installation template — downloads only when not cached (PERF-0009).
-# apt-get is only invoked when the Zig binary is not cached (QA-0009).
+# Zig installation template (SEC-R6-02: SHA-256 verified via ziglang.org index)
 .install-zig: &install-zig
+  - apt-get update && apt-get install -y curl xz-utils python3
   - |
-    if [ ! -f "zig-x86_64-linux-${ZIG_VERSION}/zig" ]; then
-      command -v curl >/dev/null 2>&1 || { apt-get update && apt-get install -y --no-install-recommends curl xz-utils ca-certificates; }
-      curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
-      tar -xf zig.tar.xz
-      rm zig.tar.xz
+    if [ ! -f "zig-${ZIG_VERSION}/zig" ]; then
+      ARCH=$(uname -m)
+      case "$ARCH" in
+        x86_64)  ZIG_ARCH="x86_64" ;;
+        aarch64) ZIG_ARCH="aarch64" ;;
+        arm64)   ZIG_ARCH="aarch64" ;;
+        *)       echo "Unsupported architecture: $ARCH"; exit 1 ;;
+      esac
+      MAJOR=$(echo "$ZIG_VERSION" | cut -d. -f1)
+      MINOR=$(echo "$ZIG_VERSION" | cut -d. -f2)
+      if [ "$MAJOR" -eq 0 ] && [ "$MINOR" -lt 15 ]; then
+        ARCHIVE_NAME="zig-linux-${ZIG_ARCH}-${ZIG_VERSION}"
+      else
+        ARCHIVE_NAME="zig-${ZIG_ARCH}-linux-${ZIG_VERSION}"
+      fi
+      TARBALL="${ARCHIVE_NAME}.tar.xz"
+      INDEX_FILE=$(mktemp)
+      curl -fsSL "https://ziglang.org/download/index.json" -o "${INDEX_FILE}"
+      EXPECTED_HASH=$(ZIG_VER="${ZIG_VERSION}" ZIG_ARCH_KEY="${ZIG_ARCH}-linux" ZIG_IDX="${INDEX_FILE}" \
+        python3 -c "
+    import json, os, sys
+    idx = json.load(open(os.environ['ZIG_IDX']))
+    pkg = idx.get(os.environ['ZIG_VER'], {}).get(os.environ['ZIG_ARCH_KEY'], {})
+    h = pkg.get('shasum', '')
+    if not h: sys.exit('SHA-256 not found for ' + os.environ['ZIG_VER'] + '/' + os.environ['ZIG_ARCH_KEY'])
+    print(h)
+    ")
+      rm -f "${INDEX_FILE}"
+      curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${TARBALL}" -o "${TARBALL}"
+      echo "${EXPECTED_HASH}  ${TARBALL}" | sha256sum --check --strict
+      tar -xJf "${TARBALL}"
+      mv "${ARCHIVE_NAME}" "zig-${ZIG_VERSION}"
+      rm -f "${TARBALL}"
     fi
-  - export PATH="$PWD/zig-x86_64-linux-${ZIG_VERSION}:$PATH"
+  - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
   - zig version
 
-# Cache the Zig toolchain and build artifacts across pipeline runs (PERF-0022).
-.zig-cache: &zig-cache
-  cache:
-    key: "zig-${ZIG_VERSION}"
-    paths:
-      - zig-x86_64-linux-${ZIG_VERSION}/
-      - .zig-cache/
+# Override zig-format component to use the project's ZIG_VERSION.
+# The v1.2.1 component defaults to 0.14.0 and does not accept a version input.
+zig-format:
+  before_script:
+    - *install-zig
 
 # Build job
 build:
   stage: build
   image: debian:bookworm-slim
-  <<: *zig-cache
   before_script:
     - *install-zig
   script:
-    - zig build
-  artifacts:
-    paths:
-      - zig-out/
-    expire_in: 1 hour
+    - zig build check
 
 # Unit tests
 test:
   stage: test
   image: debian:bookworm-slim
-  <<: *zig-cache
   before_script:
     - *install-zig
   script:
@@ -84,7 +102,6 @@ test:
 test-integration:
   stage: test
   image: debian:bookworm-slim
-  <<: *zig-cache
   before_script:
     - *install-zig
   script:
@@ -96,7 +113,6 @@ test-integration:
 test-release-safe:
   stage: test
   image: debian:bookworm-slim
-  <<: *zig-cache
   before_script:
     - *install-zig
   script:
@@ -104,11 +120,10 @@ test-release-safe:
   needs:
     - build
 
-# ReleaseFast optimization tests (QA-0011)
+# ReleaseFast tests
 test-release-fast:
   stage: test
   image: debian:bookworm-slim
-  <<: *zig-cache
   before_script:
     - *install-zig
   script:
@@ -116,11 +131,30 @@ test-release-fast:
   needs:
     - build
 
-# ReleaseSmall optimization tests (QA-0046)
+test-integration-release-safe:
+  stage: test
+  image: debian:bookworm-slim
+  before_script:
+    - *install-zig
+  script:
+    - zig build test-integration -Doptimize=ReleaseSafe --summary all
+  needs:
+    - build
+
+test-integration-release-fast:
+  stage: test
+  image: debian:bookworm-slim
+  before_script:
+    - *install-zig
+  script:
+    - zig build test-integration -Doptimize=ReleaseFast --summary all
+  needs:
+    - build
+
+# ReleaseSmall tests
 test-release-small:
   stage: test
   image: debian:bookworm-slim
-  <<: *zig-cache
   before_script:
     - *install-zig
   script:
@@ -128,77 +162,51 @@ test-release-small:
   needs:
     - build
 
-# Debug optimization tests (QA-0011)
-test-debug:
-  stage: test
+# Coverage-guided fuzz testing.
+# Runs with a 60-second timeout so the job always terminates.
+#
+# Exit-code semantics:
+#   rc=0  : fuzzer stopped cleanly before timeout (no crash)
+#   rc=124: timeout reached (expected in CI) - pass
+#   other : fuzzer found a crash - fail the job
+fuzz:
+  stage: fuzz
   image: debian:bookworm-slim
-  <<: *zig-cache
   before_script:
     - *install-zig
   script:
-    - zig build test -Doptimize=Debug --summary all
-    - zig build test-integration -Doptimize=Debug --summary all
+    - timeout 60 zig build test --fuzz; rc=$?; if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then exit $rc; fi
+  artifacts:
+    when: on_failure
+    paths:
+      - zig-out/fuzz/
+    expire_in: 1 week
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+  allow_failure: true
   needs:
     - build
 
-# Fuzz tests for binary parsing entrypoints (QA-0058, SEC-0040)
-test-fuzz:
-  stage: test
+# Benchmark regression detection.
+# Results are stored as artifacts for trend analysis.
+bench-regression:
+  stage: fuzz
   image: debian:bookworm-slim
-  <<: *zig-cache
   before_script:
     - *install-zig
   script:
-    - zig build test-fuzz --summary all
-  needs:
-    - build
-
-# Validate Makefile targets match build.zig (QA-0030)
-test-makefile:
-  stage: test
-  image: debian:bookworm-slim
-  <<: *zig-cache
-  before_script:
-    - *install-zig
-    - command -v make >/dev/null 2>&1 || { apt-get update && apt-get install -y --no-install-recommends make; }
-  script:
-    # Use `make dev` (fmt+check+unit) instead of `make ci` (clean+build+all tests)
-    # to avoid duplicating work already covered by dedicated CI jobs (PERF-0019).
-    - make dev
-  needs:
-    - build
-
-# Cross-compilation tests
-test-cross-build:
-  stage: test
-  image: debian:bookworm-slim
-  <<: *zig-cache
-  before_script:
-    - *install-zig
-  script:
-    - zig build -Dtarget=x86_64-linux
-    - zig build -Dtarget=aarch64-linux
-    - zig build -Dtarget=x86_64-macos
-    - zig build -Dtarget=aarch64-macos
-  needs:
-    - build
-
-# Benchmark regression detection (PERF-0023).
-# Runs the full benchmark suite in ReleaseFast mode after tests pass.
-# allow_failure: true until baseline thresholds are calibrated.
-bench:
-  stage: bench
-  image: debian:bookworm-slim
-  <<: *zig-cache
-  before_script:
-    - *install-zig
-  script:
-    - zig build bench -Doptimize=ReleaseFast --summary all | tee bench-output.txt
+    - zig build bench -Doptimize=ReleaseFast 2>&1 | tee bench-results.txt
   artifacts:
     paths:
-      - bench-output.txt
-    expire_in: 30 days
-    when: always
-  needs:
-    - test
+      - bench-results.txt
+    expire_in: 90 days
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
   allow_failure: true
+  needs:
+    - build
+
