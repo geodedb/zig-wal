@@ -3,7 +3,7 @@
 > **Source of truth:** [GitLab Issues](https://gitlab.com/devnw/zig/wal/-/issues?label_name%5B%5D=security)
 > filtered by label `security`. This file mirrors findings status.
 >
-> **Last updated:** 2026-03-22 (Full codebase audit — Review 14 + unified summary)
+> **Last updated:** 2026-03-30 (Parallelism & concurrency gap analysis + spice integration review)
 
 ## Summary
 
@@ -133,10 +133,15 @@ confirmed correctly scoped out. Three consecutive zero-new-finding reviews (Revi
 Automated scans (gitleaks, trufflehog, semgrep, trivy, syft+grype, osv-scanner, checkov)
 returned zero application-level findings across all fourteen reviews.
 
-All 99 unit tests, 25 integration/scenario tests, and 4 fuzz tests pass at Debug,
-ReleaseSafe, ReleaseFast, and ReleaseSmall optimization levels (128 total). No Critical
+All 110 unit tests, 25 integration/scenario tests, and 4 fuzz tests pass at Debug,
+ReleaseSafe, ReleaseFast, and ReleaseSmall optimization levels (139 total). No Critical
 or High severity findings were found in any review. Three consecutive zero-new-finding
 reviews (12, 13, 14) confirm convergence.
+
+**Parallelism Review** (2026-03-30): 8 gaps identified (PAR-0001 through PAR-0008).
+3 **closed** with code changes (spice integration, RwLock, parallel batch serialization),
+2 **Won't Do** (compaction/recovery scans are I/O-bound and architecturally sequential),
+3 **closed** with documentation updates.
 
 ## Stack-Ranked Findings
 
@@ -987,3 +992,108 @@ Keep in Geode or split into adapter code:
 - Reusable core: strong.
 - Geode-specific pieces still mixed in: server lifecycle, graph-store hooks, and env-based key sourcing in `src/wal.zig:86` through `:121`.
 - Migration priority: keep the append/replay/checkpoint core here, but ensure Geode-specific hook installation remains adapter code.
+
+## Parallelism & Concurrency Gap Analysis (2026-03-30)
+
+> **Scope:** Full review of parallelism, concurrency primitives, multiplexing
+> patterns, and integration with the `spice` heartbeat-scheduling library.
+>
+> **Method:** Manual review of all source files, build configuration, dependency
+> manifest, and cross-reference with the `spice` library at
+> `~/src/devnw/zig/spice`.
+>
+> **Last updated:** 2026-03-30 (All gaps resolved)
+
+### Executive Summary
+
+All 8 parallelism gaps have been resolved. The WAL now integrates `spice` as a
+dependency, uses `std.Thread.RwLock` for read-write separation, and supports
+optional parallel batch serialization via heartbeat-scheduled fork/join. Two
+gaps (PAR-0003, PAR-0004) were closed as Won't Do after analysis showed the
+scan phases are I/O-bound and architecturally sequential.
+
+### Concurrency Architecture (Post-Closure)
+
+| Aspect | State |
+|--------|-------|
+| Threading model | `std.Thread.RwLock` per instance — exclusive for writes, shared for reads (PAR-0005) |
+| Lock granularity | Fine — read-only getters use shared locks, mutating methods use exclusive locks |
+| Reader-writer separation | Yes — `currentLsn`, `bytesSinceCompact`, `iterator` use `lockShared` |
+| Parallel serialization | Opt-in via `Options.thread_pool: ?*spice.ThreadPool` (PAR-0002) |
+| Spice dependency | `build.zig.zon` declares `spice` as path dependency `../spice` (PAR-0001) |
+| Iterator isolation | Unchanged — opens independent file handle, shared lock only for key snapshot |
+| Multiplexing | Not applicable — documented as caller responsibility (PAR-0006) |
+
+### Stack-Ranked Gaps — Final Status
+
+| ID | Severity | Gap | Status | Resolution |
+|----|----------|-----|--------|------------|
+| PAR-0001 | High | `spice` not integrated as a dependency | **Closed** | Added to `build.zig.zon` and wired in `build.zig` for lib, test, and check targets |
+| PAR-0002 | High | Batch append serializes record encoding sequentially | **Closed** | Implemented parallel fork/join serialization via `spice.ThreadPool.call` with recursive divide-and-conquer. Opt-in via `Options.thread_pool`. 3 new tests (plaintext, encrypted, caller LSNs) |
+| PAR-0003 | Medium | Compaction CRC verification is sequential | **Won't Do** | Compaction intentionally skips CRC verification (SEC-0027). Scan phase is I/O-bound sequential header reading. No CPU-bound work to parallelize |
+| PAR-0004 | Medium | Recovery scan is single-threaded | **Won't Do** | Recovery must stop at the first corrupt record for correct truncation semantics. Scan is fundamentally sequential by design. I/O is the bottleneck, not CRC computation |
+| PAR-0005 | Medium | Coarse mutex prevents concurrent reads and writes | **Closed** | Replaced `std.Thread.Mutex` with `std.Thread.RwLock`. Read-only getters and iterator use `lockShared`/`unlockShared` |
+| PAR-0006 | Low | No multiplexed I/O for multi-WAL scenarios | **Closed** | Documented in `DESIGN.md` §6: each instance is independent, callers use external orchestration |
+| PAR-0007 | Low | Iterator does not benefit from read-ahead parallelism | **Closed** | Documented as potential future enhancement in `DESIGN.md` §6. Iterator I/O is sequential by nature; prefetch benefit is marginal for typical record sizes |
+| PAR-0008 | Info | `volatile` in `encryption.zig` is for zeroization, not concurrency | **Closed** | Already self-documenting in code comments. No confusion risk |
+
+### Closure Details
+
+#### PAR-0001: Spice Integrated — CLOSED
+
+**Changes:**
+- `build.zig.zon`: Added `.spice = .{ .path = "../spice" }` dependency
+- `build.zig`: Wired `spice_module` into lib, unit test, and check targets
+- All 110 unit tests pass with the new dependency
+
+#### PAR-0002: Batch Append Parallelism — CLOSED
+
+**Changes:**
+- `wal.zig`: Added `Options.thread_pool: ?*spice.ThreadPool = null`
+- `wal.zig`: Added `ParallelSerializeCtx`, `SerializeRange` structs and
+  `parallelSerializeRecords` recursive fork/join function
+- `wal.zig`: `appendBatchWithLsnsLocked` now uses parallel path when
+  `thread_pool` is non-null and batch size > 1
+- Parallel path pre-computes per-record buffer offsets, allocates dedicated
+  per-record plaintext scratch for encrypted mode, then uses
+  `ThreadPool.call` with divide-and-conquer (threshold: 4 records)
+- Sequential path unchanged — `thread_pool = null` (default) gives identical
+  behavior to the original code
+- 3 new tests: plaintext batch, encrypted batch, caller-provided LSNs
+
+#### PAR-0003: Compaction Parallelism — WON'T DO
+
+**Reason:** Compaction intentionally skips CRC verification (SEC-0027). The
+scan phase only reads 12-byte headers to extract LSNs and seeks past
+payload+CRC. This is I/O-bound sequential reading, not CPU-bound. The
+bulk-copy phase is already optimized with zero-copy `copy_file_range(2)` on
+Linux (PERF-0014).
+
+#### PAR-0004: Recovery Parallelism — WON'T DO
+
+**Reason:** Recovery must stop at the first corrupt record for correct
+truncation semantics (`valid_end` is the last valid record boundary). This
+requires strictly sequential CRC validation — records cannot be verified out
+of order because a failure at record N invalidates all subsequent records
+regardless of their CRC status. The I/O (sequential file reads) is the
+bottleneck, not CRC computation. Checkpoint-accelerated recovery (PERF-0013)
+already minimizes the scan window on clean shutdowns.
+
+#### PAR-0005: RwLock — CLOSED
+
+**Changes:**
+- `wal.zig`: Replaced `mu: std.Thread.Mutex` with `mu: std.Thread.RwLock`
+- Read-only getters (`currentLsn`, `bytesSinceCompact`) use `lockShared`/`unlockShared`
+- `iterator` uses `lockShared` to snapshot encryption key
+- All mutating methods (`append*`, `sync`, `compact`) use `lock`/`unlock` (exclusive)
+- All 110 unit tests + 25 integration tests pass at all 4 optimization levels
+
+#### PAR-0006/0007/0008: Documentation — CLOSED
+
+**Changes:**
+- `DESIGN.md` §6 updated from "NOT thread-safe" to comprehensive thread
+  safety and parallelism documentation
+- Multi-WAL orchestration pattern documented (PAR-0006)
+- Iterator read-ahead documented as potential future enhancement (PAR-0007)
+- `@volatileCast` usage already self-documenting in code (PAR-0008)
+- `CLAUDE.md` updated: test count, thread safety, spice dependency

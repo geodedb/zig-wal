@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "timestamp": "2026-03-30T16:35:36Z",
+  "git_commit": "unknown",
+  "system": { "os": "linux", "arch": "x86_64" },
+  "tiers": [
+    {
+      "name": "1K",
+      "record_count": 1000,
+      "payload_size": 64,
+      "append_ops_sec": 826532,
+      "batch_ops_sec": 1652133,
+      "batch_parallel_ops_sec": 1696736,
+      "iterate_ops_sec": 3824589,
+      "recovery_ms": 1.5,
+      "compact_ms": 7.2,
+      "append_enc_ops_sec": 559425,
+      "batch_enc_ops_sec": 1285240,
+      "iterate_enc_ops_sec": 2027554,
+      "recovery_enc_ms": 2.0
+    },
+    {
+      "name": "10K",
+      "record_count": 10000,
+      "payload_size": 64,
+      "append_ops_sec": 354743,
+      "batch_ops_sec": 2398601,
+      "batch_parallel_ops_sec": 3454638,
+      "iterate_ops_sec": 76567,
+      "recovery_ms": 15.2,
+      "compact_ms": 15.1,
+      "append_enc_ops_sec": 656241,
+      "batch_enc_ops_sec": 1974445,
+      "iterate_enc_ops_sec": 79528,
+      "recovery_enc_ms": 17.6
+    },
+    {
+      "name": "50K",
+      "record_count": 50000,
+      "payload_size": 64,
+      "append_ops_sec": 817366,
+      "batch_ops_sec": 3835125,
+      "batch_parallel_ops_sec": 2878913,
+      "iterate_ops_sec": 69052,
+      "recovery_ms": 72.4,
+      "compact_ms": 55.3,
+      "append_enc_ops_sec": 642793,
+      "batch_enc_ops_sec": 2214504,
+      "iterate_enc_ops_sec": 67414,
+      "recovery_enc_ms": 83.9
+    },
+    {
+      "name": "100K",
+      "record_count": 100000,
+      "payload_size": 64,
+      "append_ops_sec": 817658,
+      "batch_ops_sec": 4555456,
+      "batch_parallel_ops_sec": 3857712,
+      "iterate_ops_sec": 65324,
+      "recovery_ms": 145.9,
+      "compact_ms": 102.2,
+      "append_enc_ops_sec": 655369,
+      "batch_enc_ops_sec": 2108054,
+      "iterate_enc_ops_sec": 64606,
+      "recovery_enc_ms": 170.1
+    }
+  ]
+}

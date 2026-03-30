@@ -10,6 +10,7 @@
 //! - Thread-safe: all public methods are protected by an internal mutex.
 
 const std = @import("std");
+const spice = @import("spice");
 const record = @import("record.zig");
 const recovery_mod = @import("recovery.zig");
 const compaction = @import("compaction.zig");
@@ -62,7 +63,85 @@ pub const Options = struct {
     /// transfer on Linux (PERF-0014). Falls back to the user-space copy loop
     /// on non-Linux platforms or if the syscall is unavailable at runtime.
     zero_copy_compaction: bool = false,
+
+    /// Optional spice thread pool for parallel batch serialization (PAR-0002).
+    /// When non-null, `appendBatch` and `appendBatchWithLsns` parallelize
+    /// record serialization (CRC32 + optional encryption) across available
+    /// cores using heartbeat-scheduled fork/join.
+    ///
+    /// The thread pool is **not owned** by the WAL — the caller must manage
+    /// its lifecycle (start/deinit). When `null` (the default), all
+    /// serialization runs sequentially on the calling thread.
+    thread_pool: ?*spice.ThreadPool = null,
 };
+
+// ============================================================================
+// Parallel batch serialization (PAR-0002)
+// ============================================================================
+
+/// Shared context for parallel batch serialization. Immutable after setup.
+const ParallelSerializeCtx = struct {
+    buf: [*]u8,
+    offsets: [*]const usize,
+    lsns: [*]const u64,
+    payloads: [*]const [*]const u8,
+    payload_lens: [*]const usize,
+    encrypted: bool,
+    enc_key: ?*const [32]u8,
+    /// Per-record plaintext scratch buffer (encrypted mode only).
+    pt_buf: ?[*]u8,
+    pt_offsets: ?[*]const usize,
+};
+
+/// A range [start, end) of records to serialize, plus a pointer to shared ctx.
+const SerializeRange = struct {
+    ctx: *const ParallelSerializeCtx,
+    start: u32,
+    end: u32,
+};
+
+/// Serialize a single record at index `i` into the output buffer.
+fn serializeOneRecord(ctx: *const ParallelSerializeCtx, i: usize) void {
+    const payload_ptr = ctx.payloads[i];
+    const payload_len = ctx.payload_lens[i];
+    const payload = payload_ptr[0..payload_len];
+    const lsn = ctx.lsns[i];
+    const rec_size = record.HEADER_SIZE + payload_len + record.CRC_SIZE;
+    const out_offset = ctx.offsets[i];
+
+    if (ctx.encrypted) {
+        const enc_size = encryption.ENCRYPTION_OVERHEAD + rec_size;
+        const pt_offset = ctx.pt_offsets.?[i];
+        const pt_region = ctx.pt_buf.?[pt_offset..][0..rec_size];
+        record.serializeInto(pt_region, lsn, payload);
+        encryption.encryptInto(ctx.buf[out_offset..][0..enc_size], ctx.enc_key.?, pt_region);
+    } else {
+        record.serializeInto(ctx.buf[out_offset..][0..rec_size], lsn, payload);
+    }
+}
+
+/// Recursive fork/join serialization via spice (PAR-0002).
+fn parallelSerializeRecords(t: *spice.Task, range: SerializeRange) void {
+    const n = range.end - range.start;
+    if (n <= 4) {
+        // Base case: serialize sequentially.
+        var i = range.start;
+        while (i < range.end) : (i += 1) {
+            serializeOneRecord(range.ctx, i);
+        }
+        return;
+    }
+
+    const mid = range.start + n / 2;
+    const left = SerializeRange{ .ctx = range.ctx, .start = range.start, .end = mid };
+    const right = SerializeRange{ .ctx = range.ctx, .start = mid, .end = range.end };
+    var fut = spice.Future(SerializeRange, void).init();
+    fut.fork(t, parallelSerializeRecords, right);
+    t.call(void, parallelSerializeRecords, left);
+    if (fut.join(t)) |_| {} else {
+        t.call(void, parallelSerializeRecords, right);
+    }
+}
 
 // ============================================================================
 // WriteAheadLog
@@ -71,11 +150,12 @@ pub const Options = struct {
 /// A Write-Ahead Log that appends framed, CRC-verified records to a single
 /// file and recovers cleanly after a crash.
 ///
-/// Thread safety: all public methods that mutate WAL state are protected by
-/// an internal mutex.  Concurrent appends, syncs, and compactions are safe.
-/// Read-only getters (`currentLsn`, `bytesSinceCompact`) also acquire the
-/// lock to ensure a consistent view.  The `iterator` method opens an
-/// independent file handle and does not hold the lock during iteration.
+/// Thread safety: all public methods that mutate WAL state acquire an
+/// exclusive write lock.  Read-only getters (`currentLsn`,
+/// `bytesSinceCompact`) and `iterator` acquire a shared read lock, so
+/// multiple concurrent readers proceed without blocking each other
+/// (PAR-0005).  The `iterator` method opens an independent file handle
+/// and does not hold any lock during iteration.
 pub const WriteAheadLog = struct {
     allocator: std.mem.Allocator,
     dir: std.fs.Dir,
@@ -91,9 +171,10 @@ pub const WriteAheadLog = struct {
     /// will return `error.WalPoisoned`. Set when the file handle cannot
     /// be reopened after compaction (SEC-0008).
     poisoned: bool = false,
-    /// Internal mutex protecting all mutable state.  Acquired by append,
-    /// appendBatch, sync, compact, and read-only getters.
-    mu: std.Thread.Mutex = .{},
+    /// Internal read-write lock protecting all mutable state (PAR-0005).
+    /// Writers (append, appendBatch, sync, compact) acquire exclusive access.
+    /// Readers (currentLsn, bytesSinceCompact, iterator) acquire shared access.
+    mu: std.Thread.RwLock = .{},
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -385,32 +466,97 @@ pub const WriteAheadLog = struct {
             self.allocator.free(buf);
         }
 
-        var offset: usize = 0;
-        var last_lsn: u64 = self.current_lsn;
+        // Serialize all records into the output buffer.
+        // When a spice thread pool is available and the batch has enough
+        // records, serialization runs in parallel (PAR-0002).
+        const use_parallel = self.options.thread_pool != null and payloads.len > 1;
 
-        for (payloads, 0..) |payload, i| {
-            last_lsn = lsns[i];
+        if (use_parallel) {
+            // Pre-compute per-record output offsets.
+            const offsets = try self.allocator.alloc(usize, payloads.len);
+            defer self.allocator.free(offsets);
 
-            const rec_size = record.HEADER_SIZE + payload.len + record.CRC_SIZE;
+            // Build parallel-friendly pointer/length arrays from the payload slices.
+            const payload_ptrs = try self.allocator.alloc([*]const u8, payloads.len);
+            defer self.allocator.free(payload_ptrs);
+            const payload_lens = try self.allocator.alloc(usize, payloads.len);
+            defer self.allocator.free(payload_lens);
 
-            if (self.options.encryption_key) |*key| {
-                const enc_size = encryption.ENCRYPTION_OVERHEAD + rec_size;
-                // Serialize plaintext record into a temp region, then encrypt.
-                // Use the end of `buf` as scratch space for the plaintext.
-                const pt_start = total_size - rec_size;
-                record.serializeInto(buf[pt_start..][0..rec_size], last_lsn, payload);
-                encryption.encryptInto(buf[offset..][0..enc_size], key, buf[pt_start..][0..rec_size]);
-                offset += enc_size;
-            } else {
-                record.serializeInto(buf[offset..][0..rec_size], last_lsn, payload);
-                offset += rec_size;
+            const is_encrypted = self.options.encryption_key != null;
+
+            var off: usize = 0;
+            for (payloads, 0..) |payload, i| {
+                payload_ptrs[i] = payload.ptr;
+                payload_lens[i] = payload.len;
+                offsets[i] = off;
+                const rec_size = record.HEADER_SIZE + payload.len + record.CRC_SIZE;
+                if (is_encrypted) {
+                    off += encryption.ENCRYPTION_OVERHEAD + rec_size;
+                } else {
+                    off += rec_size;
+                }
+            }
+
+            // For encrypted mode, allocate a plaintext scratch buffer with
+            // per-record regions so parallel workers don't share scratch space.
+            var pt_buf: ?[]u8 = null;
+            var pt_offsets_buf: ?[]usize = null;
+            defer if (pt_buf) |b| {
+                encryption.secureZero(b);
+                self.allocator.free(b);
+            };
+            defer if (pt_offsets_buf) |o| self.allocator.free(o);
+
+            if (is_encrypted) {
+                var total_pt: usize = 0;
+                pt_offsets_buf = try self.allocator.alloc(usize, payloads.len);
+                for (payloads, 0..) |payload, i| {
+                    pt_offsets_buf.?[i] = total_pt;
+                    total_pt += record.HEADER_SIZE + payload.len + record.CRC_SIZE;
+                }
+                pt_buf = try self.allocator.alloc(u8, total_pt);
+            }
+
+            const ctx = ParallelSerializeCtx{
+                .buf = buf.ptr,
+                .offsets = offsets.ptr,
+                .lsns = lsns.ptr,
+                .payloads = payload_ptrs.ptr,
+                .payload_lens = payload_lens.ptr,
+                .encrypted = is_encrypted,
+                .enc_key = if (self.options.encryption_key) |*key| key else null,
+                .pt_buf = if (pt_buf) |b| b.ptr else null,
+                .pt_offsets = if (pt_offsets_buf) |o| o.ptr else null,
+            };
+
+            const count: u32 = @intCast(payloads.len);
+            const range = SerializeRange{ .ctx = &ctx, .start = 0, .end = count };
+            self.options.thread_pool.?.call(void, parallelSerializeRecords, range);
+        } else {
+            // Sequential serialization (original path).
+            var offset: usize = 0;
+            for (payloads, 0..) |payload, i| {
+                const rec_size = record.HEADER_SIZE + payload.len + record.CRC_SIZE;
+
+                if (self.options.encryption_key) |*key| {
+                    const enc_size = encryption.ENCRYPTION_OVERHEAD + rec_size;
+                    const pt_start = total_size - rec_size;
+                    record.serializeInto(buf[pt_start..][0..rec_size], lsns[i], payload);
+                    encryption.encryptInto(buf[offset..][0..enc_size], key, buf[pt_start..][0..rec_size]);
+                    offset += enc_size;
+                } else {
+                    record.serializeInto(buf[offset..][0..rec_size], lsns[i], payload);
+                    offset += rec_size;
+                }
             }
         }
+
+        const last_lsn = lsns[lsns.len - 1];
 
         // Record file position before write so we can truncate on error (SEC-0030).
         const pre_write_pos = self.file_end;
 
-        self.file.writeAll(buf[0..offset]) catch |err| {
+        self.file.writeAll(buf[0..total_size]) catch |err| {
             // Truncate any partial write to prevent torn records (SEC-0030).
             self.file.seekTo(pre_write_pos) catch {};
             std.posix.ftruncate(self.file.handle, pre_write_pos) catch {};
@@ -419,8 +565,8 @@ pub const WriteAheadLog = struct {
 
         // LSN only advances after successful write (SEC-0030).
         self.current_lsn = last_lsn;
-        self.file_end += offset;
-        self.bytes_since_compact += offset;
+        self.file_end += total_size;
+        self.bytes_since_compact += total_size;
 
         // Respect sync_every_n threshold, consistent with append() (SEC-0028).
         if (!self.options.manual_sync) {
@@ -525,19 +671,19 @@ pub const WriteAheadLog = struct {
     // -------------------------------------------------------------------------
 
     /// Return the LSN of the most recently appended record (0 if empty).
-    /// Thread-safe: acquires internal mutex.
+    /// Thread-safe: acquires shared lock (PAR-0005).
     pub fn currentLsn(self: *WriteAheadLog) u64 {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
         return self.current_lsn;
     }
 
     /// Return the number of bytes written since the last compaction (or since
     /// the file was first opened, if it has never been compacted).
-    /// Thread-safe: acquires internal mutex.
+    /// Thread-safe: acquires shared lock (PAR-0005).
     pub fn bytesSinceCompact(self: *WriteAheadLog) u64 {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockShared();
+        defer self.mu.unlockShared();
         return self.bytes_since_compact;
     }
 
@@ -549,11 +695,11 @@ pub const WriteAheadLog = struct {
     ///
     /// The iterator uses an independent file handle so it does not disturb the
     /// write position.  Call `Iterator.deinit` when done.
-    /// Thread-safe: acquires internal mutex briefly to snapshot configuration.
+    /// Thread-safe: acquires shared lock briefly to snapshot configuration (PAR-0005).
     pub fn iterator(self: *WriteAheadLog, from_lsn: u64) !Iterator {
-        self.mu.lock();
+        self.mu.lockShared();
         const enc_key = if (self.options.encryption_key) |k| k else null;
-        self.mu.unlock();
+        self.mu.unlockShared();
         const read_file = try self.dir.openFile(self.filename, .{ .mode = .read_only });
         return Iterator.init(
             self.allocator,
@@ -1554,4 +1700,107 @@ test "appendWithLsn: mixed with auto-increment append" {
     // Auto-increment continues from 100.
     const auto_lsn2 = try wal.append("auto2");
     try std.testing.expectEqual(@as(u64, 101), auto_lsn2);
+}
+
+test "appendBatch: parallel serialization with spice thread pool (PAR-0002)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var pool = spice.ThreadPool.init(allocator);
+    pool.start(.{ .background_worker_count = 2 });
+    defer pool.deinit();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "par.wal", .{
+        .manual_sync = true,
+        .thread_pool = &pool,
+    });
+    defer wal.deinit();
+
+    const payloads = [_][]const u8{ "alpha", "beta", "gamma", "delta", "epsilon" };
+    const last_lsn = try wal.appendBatch(&payloads);
+    try std.testing.expectEqual(@as(u64, 5), last_lsn);
+    try wal.sync();
+
+    // Verify all records are readable and correct.
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: usize = 0;
+    while (true) {
+        var entry = try iter.next() orelse break;
+        defer entry.deinit();
+        try std.testing.expectEqualSlices(u8, payloads[count], entry.payload);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 5), count);
+}
+
+test "appendBatch: parallel serialization with encryption (PAR-0002)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var pool = spice.ThreadPool.init(allocator);
+    pool.start(.{ .background_worker_count = 2 });
+    defer pool.deinit();
+
+    const key = [_]u8{0x42} ** 32;
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "par_enc.wal", .{
+        .manual_sync = true,
+        .encryption_key = key,
+        .thread_pool = &pool,
+    });
+    defer wal.deinit();
+
+    const payloads = [_][]const u8{ "secret1", "secret2", "secret3", "secret4", "secret5" };
+    const last_lsn = try wal.appendBatch(&payloads);
+    try std.testing.expectEqual(@as(u64, 5), last_lsn);
+    try wal.sync();
+
+    // Verify all records decrypt and match.
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: usize = 0;
+    while (true) {
+        var entry = try iter.next() orelse break;
+        defer entry.deinit();
+        try std.testing.expectEqualSlices(u8, payloads[count], entry.payload);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 5), count);
+}
+
+test "appendBatchWithLsns: parallel serialization with caller LSNs (PAR-0002)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var pool = spice.ThreadPool.init(allocator);
+    pool.start(.{ .background_worker_count = 2 });
+    defer pool.deinit();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "par_lsn.wal", .{
+        .manual_sync = true,
+        .thread_pool = &pool,
+    });
+    defer wal.deinit();
+
+    const lsns = [_]u64{ 10, 20, 30, 40, 50 };
+    const payloads = [_][]const u8{ "a", "bb", "ccc", "dddd", "eeeee" };
+    const last_lsn = try wal.appendBatchWithLsns(&lsns, &payloads);
+    try std.testing.expectEqual(@as(u64, 50), last_lsn);
+    try wal.sync();
+
+    // Verify records with correct LSNs.
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: usize = 0;
+    while (true) {
+        var entry = try iter.next() orelse break;
+        defer entry.deinit();
+        try std.testing.expectEqual(lsns[count], entry.lsn);
+        try std.testing.expectEqualSlices(u8, payloads[count], entry.payload);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 5), count);
 }

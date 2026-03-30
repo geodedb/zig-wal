@@ -3,6 +3,7 @@
 # Copyright (c) 2024-2025 CodePros
 
 .PHONY: all build test test-unit test-integration clean check fmt help dev ci bench
+.PHONY: scale-bench bench-save bench-baseline bench-compare
 .PHONY: test-debug test-release-safe test-release-fast test-release-small test-all-optimizations
 .PHONY: test-fuzz security-scan release
 .PHONY: pre-commit-install pre-commit pre-commit-run
@@ -30,10 +31,29 @@ test-integration:
 	@echo "🔗 Running integration tests..."
 	@zig build test-integration --summary all
 
-# Run performance benchmarks
+# Run basic performance benchmarks
 bench:
 	@echo "Running benchmarks..."
 	@zig build bench
+
+# Run multi-tier scale benchmarks (JSON to stdout, table to stderr)
+scale-bench:
+	@zig build scale-bench 2>/dev/null
+
+# Run scale benchmarks and save results to bench/results/<git-sha>.json
+bench-save:
+	@zig build scale-bench 2>/dev/null > bench/results/$$(git rev-parse --short HEAD).json
+	@echo "Saved to bench/results/$$(git rev-parse --short HEAD).json"
+
+# Save current results as the new accepted baseline
+bench-baseline:
+	@zig build scale-bench 2>/dev/null > bench/results/baseline.json
+	@echo "Saved to bench/results/baseline.json"
+
+# Run scale benchmarks and compare against baseline (exit 1 on regression)
+bench-compare:
+	@zig build scale-bench 2>/dev/null > /tmp/wal-current-bench.json
+	@zig build compare-bench -- bench/results/baseline.json /tmp/wal-current-bench.json
 
 # Clean build artifacts
 clean:
@@ -130,7 +150,11 @@ help:
 	@echo "  test-release-small   Test with ReleaseSmall"
 	@echo "  test-all-optimizations  Test all optimization levels"
 	@echo "  test-fuzz            Run fuzz tests"
-	@echo "  bench                Run performance benchmarks"
+	@echo "  bench                Run basic performance benchmarks"
+	@echo "  scale-bench          Run multi-tier scale benchmarks"
+	@echo "  bench-save           Save scale bench results to results/<SHA>.json"
+	@echo "  bench-baseline       Save current results as new baseline"
+	@echo "  bench-compare        Compare current run against baseline"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  fmt                  Format source code"

@@ -469,15 +469,42 @@ sizes involved.
 > (which is the same algorithm in Zig's standard library — `Crc32` is an alias
 > for `Crc32IsoHdlc`). No format change is needed.
 
-## 6. Thread Safety
+## 6. Thread Safety & Parallelism
 
-The WAL struct is NOT thread-safe by default. Callers that need concurrent
-access must provide their own synchronization (mutex, per-thread instances,
-etc.).
+All public methods are thread-safe. An internal `std.Thread.RwLock` (PAR-0005)
+protects all mutable state:
 
-**Rationale:** Geode uses a mutex internally; Raft does not need one (single-
-threaded per node). Forcing a mutex on all callers adds overhead for the common
-single-threaded case. The caller knows their concurrency model better.
+- **Exclusive (write) lock:** `append`, `appendWithLsn`, `appendBatch`,
+  `appendBatchWithLsns`, `sync`, `compact`.
+- **Shared (read) lock:** `currentLsn`, `bytesSinceCompact`, `iterator`
+  (briefly, to snapshot the encryption key; the iterator uses an independent
+  file handle and does not hold any lock during iteration).
+
+### Parallel Batch Serialization (PAR-0002)
+
+When `Options.thread_pool` is set to a `*spice.ThreadPool`, batch append
+operations (`appendBatch`, `appendBatchWithLsns`) parallelize record
+serialization (CRC32 computation + optional AES-256-GCM encryption) across
+available cores using heartbeat-scheduled fork/join. The file write, LSN
+assignment, and fsync remain sequential under the exclusive lock.
+
+When `thread_pool` is `null` (the default), all serialization runs sequentially
+on the calling thread. This preserves backward compatibility and avoids
+thread-pool overhead for single-threaded callers.
+
+### Multi-WAL Orchestration (PAR-0006)
+
+Each `WriteAheadLog` instance is fully independent — no shared state between
+instances. Callers managing multiple WAL instances (e.g., Geode graph WAL +
+Raft consensus WAL) should use an external event loop or `spice.ThreadPool`
+for coordination. The WAL library does not provide multiplexing primitives.
+
+### Recovery & Compaction: Sequential by Design
+
+Recovery must stop at the first corrupt record for correct truncation
+semantics, making the scan fundamentally sequential. Compaction intentionally
+skips CRC verification (SEC-0027) since recovery has already validated all
+records. Both are I/O-bound, not CPU-bound.
 
 ## 7. Implementation Plan
 

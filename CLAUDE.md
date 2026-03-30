@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 zig build                # Build library
-zig build test           # Unit tests (99 tests across 9 modules)
+zig build test           # Unit tests (110 tests across 9 modules)
 zig build test-integration  # Integration + scenario tests (25 tests)
 zig build check          # Fast syntax check (no codegen, good for IDE)
 
@@ -66,7 +66,8 @@ Overhead: 40 bytes. Detection: peek 12 bytes, check for magic at offset 4.
 - Zig 0.15.1+ — uses unmanaged container APIs (allocator passed to every method)
 - CRC variant: `std.hash.crc.Crc32IsoHdlc`
 - Crypto: `std.crypto.aead.aes_gcm.Aes256Gcm`
-- No thread safety — callers synchronize externally
+- Thread-safe: internal `std.Thread.RwLock` (exclusive for writes, shared for reads)
+- Optional `spice` thread pool for parallel batch serialization (PAR-0002)
 - No global/singleton state — everything is instance-based
 - Unit tests colocated in source files; integration/scenario tests in `tests/`
 - Temp files use `{filename}.tmp` pattern (not hardcoded names)
