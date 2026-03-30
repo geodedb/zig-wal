@@ -666,6 +666,72 @@ pub const WriteAheadLog = struct {
         };
     }
 
+    /// Remove all records with LSN > `after_lsn` by truncating the WAL tail.
+    ///
+    /// Scans from the file start to locate the byte position after the last
+    /// record with LSN <= `after_lsn`, then truncates the file there.
+    /// Updates `current_lsn` and `file_end` accordingly.
+    ///
+    /// This is the inverse of `compact`: compact removes the head (LSN <=),
+    /// truncateAfter removes the tail (LSN >).
+    ///
+    /// If `after_lsn` is 0, truncates the entire file (all records removed).
+    /// Thread-safe: acquires internal mutex.
+    pub fn truncateAfter(self: *WriteAheadLog, after_lsn: u64) !void {
+        self.mu.lock();
+        defer self.mu.unlock();
+        if (self.poisoned) return error.WalPoisoned;
+
+        // Scan forward from byte 0 to find the end position of the last
+        // record with LSN <= after_lsn.
+        try self.file.seekTo(0);
+
+        var valid_end: u64 = 0;
+        var last_lsn: u64 = 0;
+        var header_buf: [record.HEADER_SIZE]u8 = undefined;
+
+        while (true) {
+            const bytes_read = self.file.readAll(&header_buf) catch break;
+            if (bytes_read < record.HEADER_SIZE) break;
+
+            const lsn = std.mem.readInt(u64, header_buf[0..8], .little);
+            const payload_len = std.mem.readInt(u32, header_buf[8..12], .little);
+
+            // Guard against corrupt headers.
+            if (payload_len > record.MAX_RECORD_SIZE) break;
+
+            const record_size = record.HEADER_SIZE + payload_len + record.CRC_SIZE;
+            const record_end = valid_end + record_size;
+
+            // Skip past payload + CRC to verify record exists.
+            self.file.seekBy(@intCast(payload_len + record.CRC_SIZE)) catch break;
+
+            if (lsn > after_lsn) {
+                // This record should be truncated. Stop here.
+                break;
+            }
+
+            valid_end = record_end;
+            last_lsn = lsn;
+        }
+
+        // Truncate the file.
+        try self.file.setEndPos(valid_end);
+        try std.posix.fdatasync(self.file.handle);
+
+        // Reposition for future appends.
+        try self.file.seekTo(valid_end);
+        self.file_end = valid_end;
+        self.current_lsn = last_lsn;
+        self.bytes_since_compact = valid_end;
+        self.appends_since_sync = 0;
+
+        // Invalidate checkpoint.
+        if (self.options.checkpoint) {
+            checkpoint_mod.deleteCheckpoint(self.dir, self.filename);
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Getters
     // -------------------------------------------------------------------------
