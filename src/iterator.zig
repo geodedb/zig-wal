@@ -23,9 +23,9 @@ comptime {
 /// for typical 64-byte payloads.
 const IO_BUF_SIZE = 65536;
 
-/// Wraps `std.fs.File.Reader` with a `readAll`-compatible interface so
+/// Wraps `std.Io.File.Reader` with a `readAll`-compatible interface so
 /// `anytype` functions in `record.zig` and `encryption.zig` can accept
-/// both `std.fs.File` (unbuffered) and this type (buffered) — PERF-0021.
+/// both `std.Io.File` (unbuffered) and this type (buffered) — PERF-0021.
 const BufferedSource = struct {
     reader: *std.Io.Reader,
 
@@ -37,7 +37,7 @@ const BufferedSource = struct {
 /// A forward iterator over WAL records.
 pub const Iterator = struct {
     /// Independent read-only file handle (does not share the write cursor).
-    _file: std.fs.File,
+    _file: std.Io.File,
     /// Allocator used for payload copies returned by `next`.
     allocator: std.mem.Allocator,
     /// Records with LSN <= this value are silently skipped.
@@ -54,10 +54,10 @@ pub const Iterator = struct {
     _io_buf: []u8,
     /// Buffered reader over the file — coalesces small reads into
     /// large buffer-fill syscalls (PERF-0021).
-    _file_reader: std.fs.File.Reader,
+    _file_reader: std.Io.File.Reader,
 
     /// Create an iterator with a heap-allocated I/O buffer for buffered reads.
-    pub fn init(allocator: std.mem.Allocator, file: std.fs.File, from_lsn: u64, encryption_key: ?[32]u8) !Iterator {
+    pub fn init(allocator: std.mem.Allocator, file: std.Io.File, from_lsn: u64, encryption_key: ?[32]u8) !Iterator {
         const io_buf = try allocator.alloc(u8, IO_BUF_SIZE);
         return .{
             ._file = file,

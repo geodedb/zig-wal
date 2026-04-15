@@ -158,10 +158,10 @@ fn parallelSerializeRecords(t: *spice.Task, range: SerializeRange) void {
 /// and does not hold any lock during iteration.
 pub const WriteAheadLog = struct {
     allocator: std.mem.Allocator,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     /// Owned copy of the filename — freed in `deinit` (QA-0067).
     filename: []const u8,
-    file: std.fs.File,
+    file: std.Io.File,
     current_lsn: u64,
     file_end: u64,
     bytes_since_compact: u64,
@@ -188,7 +188,7 @@ pub const WriteAheadLog = struct {
     /// when done.
     pub fn init(
         allocator: std.mem.Allocator,
-        dir: std.fs.Dir,
+        dir: std.Io.Dir,
         filename: []const u8,
         options: Options,
     ) !WriteAheadLog {

@@ -170,7 +170,7 @@ pub fn deserialize(buf: []const u8) RecordError!Record {
 /// Returns the total number of bytes written.
 pub fn writeToFile(
     allocator: std.mem.Allocator,
-    file: std.fs.File,
+    file: std.Io.File,
     lsn: u64,
     payload: []const u8,
 ) !usize {

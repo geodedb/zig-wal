@@ -72,7 +72,7 @@ pub const RecoveryInfo = struct {
 ///
 /// This function handles **plaintext records only**.  For WAL files that may
 /// contain encrypted records, use `recoverWithKey`.
-pub fn recover(allocator: std.mem.Allocator, file: std.fs.File) !RecoveryInfo {
+pub fn recover(allocator: std.mem.Allocator, file: std.Io.File) !RecoveryInfo {
     return recoverWithKey(allocator, file, null);
 }
 
@@ -87,7 +87,7 @@ pub fn recover(allocator: std.mem.Allocator, file: std.fs.File) !RecoveryInfo {
 /// so the caller can fall back to a full scan.
 pub fn recoverFrom(
     allocator: std.mem.Allocator,
-    file: std.fs.File,
+    file: std.Io.File,
     start: RecoveryInfo,
 ) !RecoveryInfo {
     return recoverFromWithKey(allocator, file, start, null);
@@ -99,7 +99,7 @@ pub fn recoverFrom(
 /// `start.valid_end`, indicating the checkpoint is no longer valid.
 pub fn recoverFromWithKey(
     allocator: std.mem.Allocator,
-    file: std.fs.File,
+    file: std.Io.File,
     start: RecoveryInfo,
     key: ?*const [32]u8,
 ) !RecoveryInfo {
@@ -187,7 +187,7 @@ pub fn recoverFromWithKey(
 /// the file, etc.) are the same as `recover`.
 pub fn recoverWithKey(
     allocator: std.mem.Allocator,
-    file: std.fs.File,
+    file: std.Io.File,
     key: ?*const [32]u8,
 ) !RecoveryInfo {
     // Seek to the beginning of the file before scanning.

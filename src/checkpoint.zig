@@ -65,7 +65,7 @@ pub const Checkpoint = struct {
 /// during the write will leave either the old checkpoint or no checkpoint —
 /// never a partial one.
 pub fn writeCheckpoint(
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     wal_filename: []const u8,
     info: recovery_mod.RecoveryInfo,
 ) !void {
@@ -85,7 +85,7 @@ pub fn writeCheckpoint(
 /// Read and validate a checkpoint sidecar for `wal_filename` from `dir`.
 ///
 /// Returns `null` if the file does not exist or is corrupt (wrong size, bad CRC).
-pub fn readCheckpoint(dir: std.fs.Dir, wal_filename: []const u8) ?Checkpoint {
+pub fn readCheckpoint(dir: std.Io.Dir, wal_filename: []const u8) ?Checkpoint {
     var ckpt_name_buf: [atomic.TMP_NAME_BUF_SIZE]u8 = undefined;
     const ckpt_name = std.fmt.bufPrint(&ckpt_name_buf, "{s}" ++ CHECKPOINT_SUFFIX, .{wal_filename}) catch return null;
 
@@ -111,7 +111,7 @@ pub fn readCheckpoint(dir: std.fs.Dir, wal_filename: []const u8) ?Checkpoint {
 /// Delete the checkpoint sidecar for `wal_filename` from `dir`.
 ///
 /// Silently ignores errors (file not found, permissions, etc.).
-pub fn deleteCheckpoint(dir: std.fs.Dir, wal_filename: []const u8) void {
+pub fn deleteCheckpoint(dir: std.Io.Dir, wal_filename: []const u8) void {
     var ckpt_name_buf: [atomic.TMP_NAME_BUF_SIZE]u8 = undefined;
     const ckpt_name = std.fmt.bufPrint(&ckpt_name_buf, "{s}" ++ CHECKPOINT_SUFFIX, .{wal_filename}) catch return;
     dir.deleteFile(ckpt_name) catch {};

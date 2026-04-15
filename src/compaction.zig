@@ -56,7 +56,7 @@ pub const CompactResult = struct {
 
 /// Create a temporary file, removing any stale one first (SEC-0005).
 /// The caller must set up an errdefer for close+delete on the returned handle.
-fn createTempFile(dir: std.fs.Dir, tmp_name: []const u8) !std.fs.File {
+fn createTempFile(dir: std.Io.Dir, tmp_name: []const u8) !std.Io.File {
     // Note: A narrow TOCTOU window exists between delete and create (SEC-0011).
     dir.deleteFile(tmp_name) catch {};
     return dir.createFile(tmp_name, .{ .truncate = true, .mode = 0o600 });
@@ -66,7 +66,7 @@ fn createTempFile(dir: std.fs.Dir, tmp_name: []const u8) !std.fs.File {
 /// Close is deferred until after rename so that a rename failure does not
 /// leave the fd closed — the caller's errdefer can still safely close it
 /// (SEC-0035: avoids double-close → unreachable/UB on EBADF).
-fn finalizeTempFile(dir: std.fs.Dir, tmp: std.fs.File, tmp_name: []const u8, filename: []const u8) !void {
+fn finalizeTempFile(dir: std.Io.Dir, tmp: std.Io.File, tmp_name: []const u8, filename: []const u8) !void {
     try tmp.sync();
     try dir.rename(tmp_name, filename);
     tmp.close();
@@ -82,7 +82,7 @@ fn finalizeTempFile(dir: std.fs.Dir, tmp: std.fs.File, tmp_name: []const u8, fil
 /// When `zero_copy` is true on Linux, uses `copy_file_range(2)` to transfer
 /// data inside the kernel without user-space buffering. Falls back to the
 /// user-space loop if the syscall is unavailable or on non-Linux platforms.
-fn bulkCopy(src: std.fs.File, dst: std.fs.File, zero_copy: bool) !u64 {
+fn bulkCopy(src: std.Io.File, dst: std.Io.File, zero_copy: bool) !u64 {
     if (zero_copy) {
         return zeroCopyTransfer(src, dst) catch |err| switch (err) {
             // Unsupported or cross-filesystem — fall back.
@@ -94,7 +94,7 @@ fn bulkCopy(src: std.fs.File, dst: std.fs.File, zero_copy: bool) !u64 {
 }
 
 /// User-space copy loop using a 256 KiB stack buffer (original PERF-0008 path).
-fn userSpaceCopy(src: std.fs.File, dst: std.fs.File) !u64 {
+fn userSpaceCopy(src: std.Io.File, dst: std.Io.File) !u64 {
     var copy_buf: [COPY_BUF_SIZE]u8 = undefined;
     var bytes_written: u64 = 0;
     while (true) {
@@ -113,7 +113,7 @@ fn userSpaceCopy(src: std.fs.File, dst: std.fs.File) !u64 {
 ///
 /// Returns `error.OperationNotSupported` if the syscall is not available
 /// (non-Linux, old kernel, or cross-filesystem with incompatible backing stores).
-fn zeroCopyTransfer(src: std.fs.File, dst: std.fs.File) !u64 {
+fn zeroCopyTransfer(src: std.Io.File, dst: std.Io.File) !u64 {
     const native_os = @import("builtin").os.tag;
     if (native_os != .linux) return error.OperationNotSupported;
 
@@ -166,7 +166,7 @@ fn zeroCopyTransfer(src: std.fs.File, dst: std.fs.File) !u64 {
 /// during decryption in the scan phase.
 pub fn compact(
     allocator: std.mem.Allocator,
-    dir: std.fs.Dir,
+    dir: std.Io.Dir,
     filename: []const u8,
     up_to_lsn: u64,
     encryption_key: ?*const [32]u8,

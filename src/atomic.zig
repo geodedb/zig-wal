@@ -32,7 +32,7 @@ pub const TMP_NAME_BUF_SIZE = 256;
 ///
 /// Returns `error.FilenameTooLong` if `filename` is too long to derive a
 /// temp name from (limit: 251 bytes for the base name).
-pub fn atomicWriteFile(dir: std.fs.Dir, filename: []const u8, data: []const u8) !void {
+pub fn atomicWriteFile(dir: std.Io.Dir, filename: []const u8, data: []const u8) !void {
     var tmp_name_buf: [TMP_NAME_BUF_SIZE]u8 = undefined;
     const tmp_name = std.fmt.bufPrint(&tmp_name_buf, "{s}.tmp", .{filename}) catch return error.FilenameTooLong;
 
@@ -57,7 +57,7 @@ pub fn atomicWriteFile(dir: std.fs.Dir, filename: []const u8, data: []const u8) 
     try dir.rename(tmp_name, filename);
     tmp_file.close();
     // Note: A directory fsync after rename would make the directory entry fully
-    // durable on all filesystems. However, Zig's std.fs.Dir opens directories
+    // durable on all filesystems. However, Zig's std.Io.Dir opens directories
     // with O_PATH, which does not support fsync. Opening a separate read-only
     // fd for the directory is not possible without knowing the directory's
     // absolute path (which the caller does not provide). On ext4 with the

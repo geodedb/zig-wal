@@ -315,7 +315,7 @@ pub fn encryptInto(buf: []u8, key: *const [32]u8, plaintext: []const u8) void {
 /// Returns the total number of bytes written (encrypted blob size).
 pub fn encryptAndWriteToFile(
     allocator: std.mem.Allocator,
-    file: std.fs.File,
+    file: std.Io.File,
     key: *const [32]u8,
     lsn: u64,
     payload: []const u8,
