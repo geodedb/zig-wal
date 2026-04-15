@@ -16,7 +16,7 @@
 
 const std = @import("std");
 const wal_mod = @import("wal");
-const spice = @import("spice");
+const tp = @import("thread_pool");
 
 const WriteAheadLog = wal_mod.WriteAheadLog;
 const Options = wal_mod.Options;
@@ -149,7 +149,7 @@ fn benchBatch(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
     return opsPerSec(num_batches * tier.batch_size, timer.read());
 }
 
-fn benchBatchParallel(allocator: std.mem.Allocator, tier: Tier, pool: *spice.ThreadPool) !f64 {
+fn benchBatchParallel(allocator: std.mem.Allocator, tier: Tier, pool: *tp.ThreadPool) !f64 {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -254,7 +254,7 @@ fn benchIterate(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
 // Tier runner
 // ============================================================================
 
-fn runTier(allocator: std.mem.Allocator, tier: Tier, pool: *spice.ThreadPool) !TierResult {
+fn runTier(allocator: std.mem.Allocator, tier: Tier, pool: *tp.ThreadPool) !TierResult {
     const plain_opts = Options{ .manual_sync = true };
     const enc_opts = Options{ .manual_sync = true, .encryption_key = makeKey() };
 
@@ -295,7 +295,7 @@ fn writeJsonOutput(results: []const TierResult) !void {
     try out.print("{{\n", .{});
     try out.print("  \"version\": 1,\n", .{});
     try out.print("  \"timestamp\": \"{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z\",\n", .{
-        yd.year, md.month.numeric(), md.day_index + 1,
+        yd.year,              md.month.numeric(),      md.day_index + 1,
         ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute(),
     });
     try out.print("  \"git_commit\": \"unknown\",\n", .{});
@@ -357,8 +357,8 @@ fn writeSummary(results: []const TierResult) void {
             continue;
         }
         print("  {s:<6} {d:>8} {d:>14.0} {d:>14.0} {d:>14.0} {d:>14.0} {d:>10.1} {d:>10.1}\n", .{
-            r.name, r.record_count, r.append_ops_sec, r.batch_ops_sec,
-            r.batch_parallel_ops_sec, r.iterate_ops_sec, r.recovery_ms, r.compact_ms,
+            r.name,                   r.record_count,    r.append_ops_sec, r.batch_ops_sec,
+            r.batch_parallel_ops_sec, r.iterate_ops_sec, r.recovery_ms,    r.compact_ms,
         });
     }
 
@@ -371,7 +371,7 @@ fn writeSummary(results: []const TierResult) void {
     for (results) |r| {
         if (r.skipped) continue;
         print("  {s:<6} {d:>14.0} {d:>14.0} {d:>14.0} {d:>10.1}\n", .{
-            r.name, r.append_enc_ops_sec, r.batch_enc_ops_sec,
+            r.name,                r.append_enc_ops_sec, r.batch_enc_ops_sec,
             r.iterate_enc_ops_sec, r.recovery_enc_ms,
         });
     }
@@ -396,9 +396,8 @@ pub fn main() !void {
         max_tier = arg;
     }
 
-    // Start spice thread pool for parallel benchmarks.
-    var pool = spice.ThreadPool.init(allocator);
-    pool.start(.{});
+    // Start thread pool for parallel benchmarks.
+    var pool = try tp.ThreadPool.init(allocator, .{});
     defer pool.deinit();
 
     var results = std.ArrayListUnmanaged(TierResult){};

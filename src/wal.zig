@@ -10,7 +10,7 @@
 //! - Thread-safe: all public methods are protected by an internal mutex.
 
 const std = @import("std");
-const spice = @import("spice");
+const tp = @import("thread_pool");
 const record = @import("record.zig");
 const recovery_mod = @import("recovery.zig");
 const compaction = @import("compaction.zig");
@@ -64,15 +64,15 @@ pub const Options = struct {
     /// on non-Linux platforms or if the syscall is unavailable at runtime.
     zero_copy_compaction: bool = false,
 
-    /// Optional spice thread pool for parallel batch serialization (PAR-0002).
+    /// Optional thread pool for parallel batch serialization (PAR-0002).
     /// When non-null, `appendBatch` and `appendBatchWithLsns` parallelize
     /// record serialization (CRC32 + optional encryption) across available
-    /// cores using heartbeat-scheduled fork/join.
+    /// cores using flat-chunk submitBatch + WaitGroup.
     ///
     /// The thread pool is **not owned** by the WAL — the caller must manage
-    /// its lifecycle (start/deinit). When `null` (the default), all
+    /// its lifecycle (init/deinit). When `null` (the default), all
     /// serialization runs sequentially on the calling thread.
-    thread_pool: ?*spice.ThreadPool = null,
+    thread_pool: ?*tp.ThreadPool = null,
 };
 
 // ============================================================================
@@ -120,28 +120,23 @@ fn serializeOneRecord(ctx: *const ParallelSerializeCtx, i: usize) void {
     }
 }
 
-/// Recursive fork/join serialization via spice (PAR-0002).
-fn parallelSerializeRecords(t: *spice.Task, range: SerializeRange) void {
-    const n = range.end - range.start;
-    if (n <= 4) {
-        // Base case: serialize sequentially.
-        var i = range.start;
-        while (i < range.end) : (i += 1) {
-            serializeOneRecord(range.ctx, i);
-        }
-        return;
-    }
+/// Maximum number of chunks for parallel serialization (matches thread-pool worker bitmap width).
+const MAX_SERIALIZE_CHUNKS = 64;
 
-    const mid = range.start + n / 2;
-    const left = SerializeRange{ .ctx = range.ctx, .start = range.start, .end = mid };
-    const right = SerializeRange{ .ctx = range.ctx, .start = mid, .end = range.end };
-    var fut = spice.Future(SerializeRange, void).init();
-    fut.fork(t, parallelSerializeRecords, right);
-    t.call(void, parallelSerializeRecords, left);
-    if (fut.join(t)) |_| {} else {
-        t.call(void, parallelSerializeRecords, right);
+/// Chunk context for a parallel serialization task.
+const SerializeChunk = struct {
+    ctx: *const ParallelSerializeCtx,
+    start: u32,
+    end: u32,
+
+    fn run(ctx_ptr: *anyopaque, _: *tp.TaskContext) void {
+        const self: *SerializeChunk = @ptrCast(@alignCast(ctx_ptr));
+        var i = self.start;
+        while (i < self.end) : (i += 1) {
+            serializeOneRecord(self.ctx, i);
+        }
     }
-}
+};
 
 // ============================================================================
 // WriteAheadLog
@@ -467,7 +462,7 @@ pub const WriteAheadLog = struct {
         }
 
         // Serialize all records into the output buffer.
-        // When a spice thread pool is available and the batch has enough
+        // When a thread pool is available and the batch has enough
         // records, serialization runs in parallel (PAR-0002).
         const use_parallel = self.options.thread_pool != null and payloads.len > 1;
 
@@ -530,8 +525,29 @@ pub const WriteAheadLog = struct {
             };
 
             const count: u32 = @intCast(payloads.len);
-            const range = SerializeRange{ .ctx = &ctx, .start = 0, .end = count };
-            self.options.thread_pool.?.call(void, parallelSerializeRecords, range);
+            const n_chunks = @min(count, MAX_SERIALIZE_CHUNKS);
+            const chunk_size = (count + n_chunks - 1) / n_chunks;
+
+            var chunks: [MAX_SERIALIZE_CHUNKS]SerializeChunk = undefined;
+            var batch_tasks: [MAX_SERIALIZE_CHUNKS]tp.BatchTask = undefined;
+            var n: u32 = 0;
+            var start: u32 = 0;
+            while (start < count) {
+                const end = @min(start + chunk_size, count);
+                chunks[n] = .{ .ctx = &ctx, .start = start, .end = end };
+                batch_tasks[n] = .{ .task_fn = &SerializeChunk.run, .ctx = @ptrCast(&chunks[n]) };
+                n += 1;
+                start = end;
+            }
+
+            var wg = self.options.thread_pool.?.waitGroup();
+            if (self.options.thread_pool.?.submitBatch(batch_tasks[0..n], .{ .wait_group = &wg })) |_| {
+                wg.wait();
+            } else |_| {
+                // submitBatch failed (pool shutting down or queue full); fall back to sequential.
+                var i: u32 = 0;
+                while (i < count) : (i += 1) serializeOneRecord(&ctx, i);
+            }
         } else {
             // Sequential serialization (original path).
             var offset: usize = 0;
@@ -1768,13 +1784,12 @@ test "appendWithLsn: mixed with auto-increment append" {
     try std.testing.expectEqual(@as(u64, 101), auto_lsn2);
 }
 
-test "appendBatch: parallel serialization with spice thread pool (PAR-0002)" {
+test "appendBatch: parallel serialization with thread pool (PAR-0002)" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var pool = spice.ThreadPool.init(allocator);
-    pool.start(.{ .background_worker_count = 2 });
+    var pool = try tp.ThreadPool.init(allocator, .{ .max_threads = 2 });
     defer pool.deinit();
 
     var wal = try WriteAheadLog.init(allocator, tmp.dir, "par.wal", .{
@@ -1806,8 +1821,7 @@ test "appendBatch: parallel serialization with encryption (PAR-0002)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var pool = spice.ThreadPool.init(allocator);
-    pool.start(.{ .background_worker_count = 2 });
+    var pool = try tp.ThreadPool.init(allocator, .{ .max_threads = 2 });
     defer pool.deinit();
 
     const key = [_]u8{0x42} ** 32;
@@ -1841,8 +1855,7 @@ test "appendBatchWithLsns: parallel serialization with caller LSNs (PAR-0002)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var pool = spice.ThreadPool.init(allocator);
-    pool.start(.{ .background_worker_count = 2 });
+    var pool = try tp.ThreadPool.init(allocator, .{ .max_threads = 2 });
     defer pool.deinit();
 
     var wal = try WriteAheadLog.init(allocator, tmp.dir, "par_lsn.wal", .{

@@ -59,16 +59,36 @@ const Metric = struct {
     get: *const fn (TierData) f64,
 };
 
-fn getAppendOps(t: TierData) f64 { return t.append_ops_sec; }
-fn getBatchOps(t: TierData) f64 { return t.batch_ops_sec; }
-fn getBatchParOps(t: TierData) f64 { return t.batch_parallel_ops_sec; }
-fn getIterateOps(t: TierData) f64 { return t.iterate_ops_sec; }
-fn getRecoveryMs(t: TierData) f64 { return t.recovery_ms; }
-fn getCompactMs(t: TierData) f64 { return t.compact_ms; }
-fn getAppendEncOps(t: TierData) f64 { return t.append_enc_ops_sec; }
-fn getBatchEncOps(t: TierData) f64 { return t.batch_enc_ops_sec; }
-fn getIterateEncOps(t: TierData) f64 { return t.iterate_enc_ops_sec; }
-fn getRecoveryEncMs(t: TierData) f64 { return t.recovery_enc_ms; }
+fn getAppendOps(t: TierData) f64 {
+    return t.append_ops_sec;
+}
+fn getBatchOps(t: TierData) f64 {
+    return t.batch_ops_sec;
+}
+fn getBatchParOps(t: TierData) f64 {
+    return t.batch_parallel_ops_sec;
+}
+fn getIterateOps(t: TierData) f64 {
+    return t.iterate_ops_sec;
+}
+fn getRecoveryMs(t: TierData) f64 {
+    return t.recovery_ms;
+}
+fn getCompactMs(t: TierData) f64 {
+    return t.compact_ms;
+}
+fn getAppendEncOps(t: TierData) f64 {
+    return t.append_enc_ops_sec;
+}
+fn getBatchEncOps(t: TierData) f64 {
+    return t.batch_enc_ops_sec;
+}
+fn getIterateEncOps(t: TierData) f64 {
+    return t.iterate_enc_ops_sec;
+}
+fn getRecoveryEncMs(t: TierData) f64 {
+    return t.recovery_enc_ms;
+}
 
 const metrics = [_]Metric{
     .{ .name = "append_ops_sec", .kind = .higher_is_better, .get = getAppendOps },
@@ -200,7 +220,7 @@ pub fn main() !void {
 
             print("  {s:<6} {s:<22} {d:>14.1} {d:>14.1} {s}{d:>8.1}% {s:>6}\n", .{
                 base_tier.name, m.name, base_val, cur_val,
-                sign, delta, status,
+                sign,           delta,  status,
             });
         }
 
