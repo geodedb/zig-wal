@@ -83,29 +83,31 @@ fn finalizeTempFile(dir: std.Io.Dir, tmp: std.Io.File, tmp_name: []const u8, fil
 /// When `zero_copy` is true on Linux, uses `copy_file_range(2)` to transfer
 /// data inside the kernel without user-space buffering. Falls back to the
 /// user-space loop if the syscall is unavailable or on non-Linux platforms.
-fn bulkCopy(src: std.Io.File, dst: std.Io.File, zero_copy: bool) !u64 {
+fn bulkCopy(src: std.Io.File, dst: std.Io.File, zero_copy: bool, src_offset: u64) !u64 {
     if (zero_copy) {
-        return zeroCopyTransfer(src, dst) catch |err| switch (err) {
+        return zeroCopyTransfer(src, dst, src_offset) catch |err| switch (err) {
             // Unsupported or cross-filesystem — fall back.
-            error.OperationNotSupported => return userSpaceCopy(src, dst),
+            error.OperationNotSupported => return userSpaceCopy(src, dst, src_offset),
             else => return err,
         };
     }
-    return userSpaceCopy(src, dst);
+    return userSpaceCopy(src, dst, src_offset);
 }
 
 /// User-space copy loop using a 256 KiB stack buffer (original PERF-0008 path).
-fn userSpaceCopy(src: std.Io.File, dst: std.Io.File) !u64 {
+fn userSpaceCopy(src: std.Io.File, dst: std.Io.File, src_offset: u64) !u64 {
+    const io = std.Io.Threaded.global_single_threaded.io();
     var copy_buf: [COPY_BUF_SIZE]u8 = undefined;
-    var bytes_written: u64 = 0;
+    var read_off: u64 = src_offset;
+    var write_off: u64 = 0;
     while (true) {
-        const io = std.Io.Threaded.global_single_threaded.io();
-        const n = try src.readStreaming(io, &.{&copy_buf});
+        const n = try src.readPositionalAll(io, &copy_buf, read_off);
         if (n == 0) break;
-        try dst.writeStreamingAll(io, copy_buf[0..n]);
-        bytes_written += n;
+        try dst.writePositionalAll(io, copy_buf[0..n], write_off);
+        read_off += n;
+        write_off += n;
     }
-    return bytes_written;
+    return write_off;
 }
 
 /// Zero-copy transfer using Linux `copy_file_range(2)` (PERF-0014).
@@ -115,13 +117,14 @@ fn userSpaceCopy(src: std.Io.File, dst: std.Io.File) !u64 {
 ///
 /// Returns `error.OperationNotSupported` if the syscall is not available
 /// (non-Linux, old kernel, or cross-filesystem with incompatible backing stores).
-fn zeroCopyTransfer(src: std.Io.File, dst: std.Io.File) !u64 {
+fn zeroCopyTransfer(src: std.Io.File, dst: std.Io.File, src_offset: u64) !u64 {
     const native_os = @import("builtin").os.tag;
     if (native_os != .linux) return error.OperationNotSupported;
 
+    var off_in: i64 = @intCast(src_offset);
     var bytes_written: u64 = 0;
     while (true) {
-        const n = std.os.linux.copy_file_range(src.handle, null, dst.handle, null, COPY_BUF_SIZE, 0);
+        const n = std.os.linux.copy_file_range(src.handle, @ptrCast(&off_in), dst.handle, null, COPY_BUF_SIZE, 0);
         switch (std.os.linux.errno(n)) {
             .SUCCESS => {},
             .INTR => continue, // Interrupted by signal — retry (SEC NEW-6).
@@ -208,7 +211,9 @@ pub fn compact(
 
         if (encryption_key != null and encryption.isEncrypted(&peek_buf)) {
             // ── Encrypted record path (QA-0002: shared reader, PERF-0016: reuse buffer) ──
-            const blob_result = try encryption.readEncryptedBlobReuse(allocator, src, &peek_buf, &reuse_buf) orelse break;
+            // FileSource positioned after the peek bytes already read.
+            var enc_src = record.FileSource.initAt(src, current_offset + encryption.DETECT_PEEK_SIZE);
+            const blob_result = try encryption.readEncryptedBlobReuse(allocator, &enc_src, &peek_buf, &reuse_buf) orelse break;
             // No per-record defer — reuse_buf freed once after the loop (PERF-0016).
 
             // Decrypt in-place to extract LSN — avoids extra allocation (PERF-0003).
@@ -290,7 +295,7 @@ pub fn compact(
         dir.deleteFile(std.Io.Threaded.global_single_threaded.io(), tmp_name) catch {};
     }
 
-    const bytes_written = try bulkCopy(src, tmp, zero_copy);
+    const bytes_written = try bulkCopy(src, tmp, zero_copy, kept_offset);
 
     try finalizeTempFile(dir, tmp, tmp_name, filename);
 
@@ -323,11 +328,12 @@ test "compact: removes records below watermark" {
     // Re-open and verify only LSNs 4 and 5 remain.
     const rf = try tmp_dir.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .mode = .read_only });
     defer rf.close(std.Io.Threaded.global_single_threaded.io());
+    var rfs = record.FileSource.init(rf);
 
     var expected_lsn: u64 = 4;
     while (true) {
-        const hdr_result = try record.readHeaderRaw(rf) orelse break;
-        const payload = try record.readPayloadAndVerify(allocator, rf, hdr_result.info, hdr_result.raw) orelse break;
+        const hdr_result = try record.readHeaderRaw(&rfs) orelse break;
+        const payload = try record.readPayloadAndVerify(allocator, &rfs, hdr_result.info, hdr_result.raw) orelse break;
         defer allocator.free(payload);
 
         try std.testing.expectEqual(expected_lsn, hdr_result.info.lsn);
@@ -420,14 +426,15 @@ test "compact: append after compact works" {
     // Read back all 4 records and verify.
     const rf = try tmp_dir.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .mode = .read_only });
     defer rf.close(std.Io.Threaded.global_single_threaded.io());
+    var rfs = record.FileSource.init(rf);
 
     const expected_lsns = [_]u64{ 3, 4, 5, 6 };
     const expected_payloads = [_][]const u8{ "before", "before", "after", "after" };
     var idx: usize = 0;
 
     while (true) {
-        const hdr_result = try record.readHeaderRaw(rf) orelse break;
-        const payload = try record.readPayloadAndVerify(allocator, rf, hdr_result.info, hdr_result.raw) orelse break;
+        const hdr_result = try record.readHeaderRaw(&rfs) orelse break;
+        const payload = try record.readPayloadAndVerify(allocator, &rfs, hdr_result.info, hdr_result.raw) orelse break;
         defer allocator.free(payload);
 
         try std.testing.expectEqual(expected_lsns[idx], hdr_result.info.lsn);
@@ -476,15 +483,16 @@ test "compact: encrypted — removes records below watermark (QA-0025)" {
     // Re-open and verify only LSNs 4 and 5 remain by reading encrypted records.
     const rf = try tmp_dir.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .mode = .read_only });
     defer rf.close(std.Io.Threaded.global_single_threaded.io());
+    var rfs = record.FileSource.init(rf);
 
     var expected_lsn: u64 = 4;
     while (true) {
         // Peek to detect record.
         var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
-        const peek_n = try rf.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
+        const peek_n = try rfs.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
         if (peek_n < encryption.DETECT_PEEK_SIZE) break;
 
-        const blob_result = try encryption.readEncryptedBlob(allocator, rf, &peek_buf) orelse break;
+        const blob_result = try encryption.readEncryptedBlob(allocator, &rfs, &peek_buf) orelse break;
         defer {
             encryption.secureZero(blob_result.blob);
             allocator.free(blob_result.blob);
@@ -571,11 +579,12 @@ test "compact: zero-copy removes records below watermark (PERF-0014)" {
     // Verify only LSNs 4 and 5 remain.
     const rf = try tmp_dir.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .mode = .read_only });
     defer rf.close(std.Io.Threaded.global_single_threaded.io());
+    var rfs = record.FileSource.init(rf);
 
     var expected_lsn: u64 = 4;
     while (true) {
-        const hdr_result = try record.readHeaderRaw(rf) orelse break;
-        const payload = try record.readPayloadAndVerify(allocator, rf, hdr_result.info, hdr_result.raw) orelse break;
+        const hdr_result = try record.readHeaderRaw(&rfs) orelse break;
+        const payload = try record.readPayloadAndVerify(allocator, &rfs, hdr_result.info, hdr_result.raw) orelse break;
         defer allocator.free(payload);
         try std.testing.expectEqual(expected_lsn, hdr_result.info.lsn);
         expected_lsn += 1;
@@ -618,13 +627,14 @@ test "compact: zero-copy encrypted (PERF-0014)" {
     // Verify records.
     const rf = try tmp_dir.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .mode = .read_only });
     defer rf.close(std.Io.Threaded.global_single_threaded.io());
+    var rfs = record.FileSource.init(rf);
 
     var expected_lsn: u64 = 4;
     while (true) {
         var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
-        const peek_n = try rf.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
+        const peek_n = try rfs.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
         if (peek_n < encryption.DETECT_PEEK_SIZE) break;
-        const blob_result = try encryption.readEncryptedBlob(allocator, rf, &peek_buf) orelse break;
+        const blob_result = try encryption.readEncryptedBlob(allocator, &rfs, &peek_buf) orelse break;
         defer {
             encryption.secureZero(blob_result.blob);
             allocator.free(blob_result.blob);

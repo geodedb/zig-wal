@@ -17,6 +17,36 @@
 const std = @import("std");
 const Crc32IsoHdlc = std.hash.crc.Crc32IsoHdlc;
 
+/// Wraps `std.Io.File` with sequential read tracking so `readAll` works
+/// like the pre-0.16 streaming API. Used by `readHeaderRaw` and
+/// `readPayloadAndVerify` which accept `anytype` sources.
+pub const FileSource = struct {
+    file: std.Io.File,
+    offset: u64,
+
+    pub fn init(file: std.Io.File) FileSource {
+        return .{ .file = file, .offset = 0 };
+    }
+
+    pub fn initAt(file: std.Io.File, offset: u64) FileSource {
+        return .{ .file = file, .offset = offset };
+    }
+
+    pub fn readAll(self: *FileSource, buf: []u8) !usize {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const n = try self.file.readPositionalAll(io, buf, self.offset);
+        self.offset += n;
+        return n;
+    }
+
+    pub fn readPositionalAll(self: *FileSource, _: std.Io, buf: []u8, _: u64) !usize {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const n = try self.file.readPositionalAll(io, buf, self.offset);
+        self.offset += n;
+        return n;
+    }
+};
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -219,14 +249,14 @@ pub fn readPayloadAndVerify(
     const payload = try allocator.alloc(u8, payload_len);
     errdefer allocator.free(payload);
 
-    const pn = try source.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), payload, 0);
+    const pn = try source.readAll(payload);
     if (pn < payload_len) {
         allocator.free(payload);
         return null; // torn write
     }
 
     var crc_buf: [CRC_SIZE]u8 = undefined;
-    const cn = try source.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &crc_buf, 0);
+    const cn = try source.readAll(&crc_buf);
     if (cn < CRC_SIZE) {
         allocator.free(payload);
         return null; // torn write
@@ -258,7 +288,7 @@ pub fn readPayloadAndVerify(
 /// Returns `null` on EOF or short read.
 pub fn readHeaderRaw(source: anytype) !?struct { info: HeaderInfo, raw: [HEADER_SIZE]u8 } {
     var buf: [HEADER_SIZE]u8 = undefined;
-    const n = try source.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &buf, 0);
+    const n = try source.readAll(&buf);
     if (n < HEADER_SIZE) return null;
 
     return .{
@@ -413,12 +443,13 @@ test "writeToFile: heap fallback for payloads above STACK_WRITE_THRESHOLD" {
     // Reopen read-only and read back via readHeaderRaw + readPayloadAndVerify.
     const rf = try tmp.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "heap_fallback.wal", .{ .mode = .read_only });
     defer rf.close(std.Io.Threaded.global_single_threaded.io());
+    var src = FileSource.init(rf);
 
-    const hdr = (try readHeaderRaw(rf)) orelse return error.Unexpected;
+    const hdr = (try readHeaderRaw(&src)) orelse return error.Unexpected;
     try std.testing.expectEqual(lsn, hdr.info.lsn);
     try std.testing.expectEqual(@as(u32, payload_size), hdr.info.payload_len);
 
-    const read_payload = (try readPayloadAndVerify(allocator, rf, hdr.info, hdr.raw)) orelse return error.Unexpected;
+    const read_payload = (try readPayloadAndVerify(allocator, &src, hdr.info, hdr.raw)) orelse return error.Unexpected;
     defer allocator.free(read_payload);
 
     try std.testing.expectEqualSlices(u8, large_payload, read_payload);

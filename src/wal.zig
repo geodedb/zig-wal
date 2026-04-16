@@ -254,8 +254,8 @@ pub const WriteAheadLog = struct {
         // Truncate any bytes beyond the last valid record (torn writes, etc.).
         try file.setLength(std.Io.Threaded.global_single_threaded.io(), info.valid_end);
 
-        // Position cursor at the write tail.
-        // seekTo removed in 0.16 — using positional I/O
+        // Position cursor at the write tail for streaming writes.
+        _ = std.c.lseek(file.handle, @intCast(info.valid_end), 0);
 
         return WriteAheadLog{
             .allocator = allocator,
@@ -643,12 +643,12 @@ pub const WriteAheadLog = struct {
             return err;
         };
 
+        // Update bookkeeping before reopen so cursor is positioned correctly.
+        self.file_end = result.new_size;
+
         // Reopen the (now compacted) file for appending (QA-0010).
         self.reopenOrPoison();
         if (self.poisoned) return error.WalPoisoned;
-
-        // Update bookkeeping.
-        self.file_end = result.new_size;
         self.bytes_since_compact = 0;
         self.appends_since_sync = 0; // finalizeTempFile already fsynced (QA-0036)
 
@@ -672,7 +672,8 @@ pub const WriteAheadLog = struct {
             self.poisoned = true;
             return;
         };
-        // No seek needed — 0.16 uses positional I/O with self.file_end tracking.
+        // Position cursor at write tail for streaming writes.
+        _ = std.c.lseek(self.file.handle, @intCast(self.file_end), 0);
     }
 
     /// Remove all records with LSN > `after_lsn` by truncating the WAL tail.
@@ -721,9 +722,10 @@ pub const WriteAheadLog = struct {
             last_lsn = lsn;
         }
 
-        // Truncate the file.
+        // Truncate the file and reposition cursor for streaming writes.
         try self.file.setLength(io, valid_end);
         try self.file.sync(io);
+        _ = std.c.lseek(self.file.handle, @intCast(valid_end), 0);
 
         self.file_end = valid_end;
         self.current_lsn = last_lsn;

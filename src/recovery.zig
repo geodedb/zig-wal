@@ -108,7 +108,8 @@ pub fn recoverFromWithKey(
     if (stat.size < start.valid_end) return error.CheckpointStale;
 
     // Seek to the checkpoint position and scan forward.
-    // seekTo removed in 0.16 — using positional I/O
+    // 0.16 uses FileSource with positional I/O offset tracking.
+    var src = record.FileSource.initAt(file, start.valid_end);
 
     // Seed the scan state from the checkpoint.
     // If the checkpoint has a non-zero last_lsn, ensure record_count > 0
@@ -129,11 +130,11 @@ pub fn recoverFromWithKey(
 
     while (true) {
         var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
-        const peek_n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
+        const peek_n = try src.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
         if (peek_n < encryption.DETECT_PEEK_SIZE) break;
 
         if (key != null and encryption.isEncrypted(&peek_buf)) {
-            const blob_result = try encryption.readEncryptedBlobReuse(allocator, file, &peek_buf, &reuse_buf) orelse break;
+            const blob_result = try encryption.readEncryptedBlobReuse(allocator, &src, &peek_buf, &reuse_buf) orelse break;
             const plaintext = encryption.decryptRecordInPlace(key.?, blob_result.blob) catch break;
             const rec = record.deserialize(plaintext) catch break;
 
@@ -154,13 +155,13 @@ pub fn recoverFromWithKey(
             if (tail_len <= STACK_READ_THRESHOLD + record.CRC_SIZE) {
                 var stack_buf: [STACK_READ_THRESHOLD + record.CRC_SIZE]u8 = undefined;
                 const tail = stack_buf[0..tail_len];
-                const n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), tail, 0);
+                const n = try src.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), tail, 0);
                 if (n < tail_len) break;
                 if (!record.verifyCrc(header_buf, tail[0..payload_len], tail[payload_len..])) break;
             } else {
                 const heap_buf = try allocator.alloc(u8, tail_len);
                 defer allocator.free(heap_buf);
-                const n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), heap_buf, 0);
+                const n = try src.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), heap_buf, 0);
                 if (n < tail_len) break;
                 if (!record.verifyCrc(header_buf, heap_buf[0..payload_len], heap_buf[payload_len..])) break;
             }
@@ -190,8 +191,8 @@ pub fn recoverWithKey(
     file: std.Io.File,
     key: ?*const [32]u8,
 ) !RecoveryInfo {
-    // Seek to the beginning of the file before scanning.
-    // seekTo removed in 0.16 — using positional I/O
+    // 0.16 uses FileSource with positional I/O offset tracking from byte 0.
+    var src = record.FileSource.init(file);
 
     var info = RecoveryInfo{
         .last_lsn = 0,
@@ -212,7 +213,7 @@ pub fn recoverWithKey(
         // Read DETECT_PEEK_SIZE bytes (blob_len + magic) to decide which
         // parsing path to take (QA-0014).
         var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
-        const peek_n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
+        const peek_n = try src.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
         if (peek_n < encryption.DETECT_PEEK_SIZE) {
             // EOF or torn write — stop scanning.
             break;
@@ -220,7 +221,7 @@ pub fn recoverWithKey(
 
         if (key != null and encryption.isEncrypted(&peek_buf)) {
             // ── Encrypted record path (QA-0002: shared reader, PERF-0016: reuse buffer) ──
-            const blob_result = try encryption.readEncryptedBlobReuse(allocator, file, &peek_buf, &reuse_buf) orelse break;
+            const blob_result = try encryption.readEncryptedBlobReuse(allocator, &src, &peek_buf, &reuse_buf) orelse break;
 
             // Decrypt in-place to get the inner plaintext record bytes (PERF-0003).
             const plaintext = encryption.decryptRecordInPlace(key.?, blob_result.blob) catch {
@@ -259,7 +260,7 @@ pub fn recoverWithKey(
                 var stack_buf: [STACK_READ_THRESHOLD + record.CRC_SIZE]u8 = undefined;
                 const tail = stack_buf[0..tail_len];
 
-                const n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), tail, 0);
+                const n = try src.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), tail, 0);
                 if (n < tail_len) break;
 
                 if (!record.verifyCrc(header_buf, tail[0..payload_len], tail[payload_len..])) break;
@@ -267,7 +268,7 @@ pub fn recoverWithKey(
                 const heap_buf = try allocator.alloc(u8, tail_len);
                 defer allocator.free(heap_buf);
 
-                const n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), heap_buf, 0);
+                const n = try src.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), heap_buf, 0);
                 if (n < tail_len) break;
 
                 const payload_slice = heap_buf[0..payload_len];
@@ -450,28 +451,26 @@ test "recover: non-monotonic LSN stops scan (SEC-0022)" {
     _ = try record.writeToFile(allocator, file, 3, "three");
 
     // Overwrite the second record's LSN with 1 (non-monotonic: 1 <= 1).
-    // Seek to the start of the second record and write LSN=1.
-    // seekTo removed in 0.16 — using positional I/O
+    // Write at the start of the second record using positional I/O.
+    const io = std.Io.Threaded.global_single_threaded.io();
     var lsn_buf: [8]u8 = undefined;
     std.mem.writeInt(u64, &lsn_buf, 1, .little);
-    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &lsn_buf);
+    try file.writePositionalAll(io, &lsn_buf, first_size);
 
     // Now rewrite the CRC of the second record so it's valid for the modified LSN.
-    // Read the full modified second record, recompute CRC, and write it back.
-    // seekTo removed in 0.16 — using positional I/O
+    // Read the full modified second record from its start offset.
     const payload_str = "two";
     const rec_size = record.HEADER_SIZE + payload_str.len + record.CRC_SIZE;
     var rec_buf: [record.HEADER_SIZE + 3 + record.CRC_SIZE]u8 = undefined;
-    const n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), rec_buf[0..rec_size], 0);
+    const n = try file.readPositionalAll(io, rec_buf[0..rec_size], first_size);
     if (n < rec_size) return error.Unexpected;
 
     // Recompute CRC over header + payload.
     const crc = std.hash.crc.Crc32IsoHdlc.hash(rec_buf[0 .. record.HEADER_SIZE + payload_str.len]);
     std.mem.writeInt(u32, rec_buf[record.HEADER_SIZE + payload_str.len ..][0..4], crc, .little);
 
-    // Write the fixed record back.
-    // seekTo removed in 0.16 — using positional I/O
-    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), rec_buf[0..rec_size]);
+    // Write the fixed record back at the same position.
+    try file.writePositionalAll(io, rec_buf[0..rec_size], first_size);
 
     // Recovery should stop at the non-monotonic record (LSN 1 <= 1).
     const info = try recover(allocator, file);
