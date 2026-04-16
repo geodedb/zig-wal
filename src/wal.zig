@@ -174,7 +174,7 @@ pub const WriteAheadLog = struct {
     /// Internal read-write lock protecting all mutable state (PAR-0005).
     /// Writers (append, appendBatch, sync, compact) acquire exclusive access.
     /// Readers (currentLsn, bytesSinceCompact, iterator) acquire shared access.
-    mu: std.Thread.RwLock = .{},
+    mu: std.Io.RwLock = .{},
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -314,8 +314,8 @@ pub const WriteAheadLog = struct {
     /// Returns the LSN assigned to this record.
     /// Thread-safe: acquires internal mutex.
     pub fn append(self: *WriteAheadLog, payload: []const u8) !u64 {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.appendWithLsnLocked(self.current_lsn + 1, payload);
     }
 
@@ -328,8 +328,8 @@ pub const WriteAheadLog = struct {
     /// numbering (e.g., Raft log indices) and need the WAL LSN to match.
     /// Thread-safe: acquires internal mutex.
     pub fn appendWithLsn(self: *WriteAheadLog, lsn: u64, payload: []const u8) !u64 {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.appendWithLsnLocked(lsn, payload);
     }
 
@@ -395,8 +395,8 @@ pub const WriteAheadLog = struct {
     /// Errors if `payloads` is empty (there is nothing to flush).
     /// Thread-safe: acquires internal mutex.
     pub fn appendBatch(self: *WriteAheadLog, payloads: []const []const u8) !u64 {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.poisoned) return error.WalPoisoned;
         if (payloads.len == 0) return error.EmptyBatch; // SEC-0023
 
@@ -425,8 +425,8 @@ pub const WriteAheadLog = struct {
     /// numbering (e.g., Raft log indices) and need WAL LSNs to match.
     /// Thread-safe: acquires internal mutex.
     pub fn appendBatchWithLsns(self: *WriteAheadLog, lsns: []const u64, payloads: []const []const u8) !u64 {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         return self.appendBatchWithLsnsLocked(lsns, payloads);
     }
 
@@ -586,8 +586,8 @@ pub const WriteAheadLog = struct {
     /// Use this when `options.manual_sync` is `true`.
     /// Thread-safe: acquires internal mutex.
     pub fn sync(self: *WriteAheadLog) !void {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.poisoned) return error.WalPoisoned;
         try std.posix.fdatasync(self.file.handle);
         self.appends_since_sync = 0;
@@ -607,8 +607,8 @@ pub const WriteAheadLog = struct {
     /// operations will return `error.WalPoisoned` (SEC-0008).
     /// Thread-safe: acquires internal mutex.
     pub fn compact(self: *WriteAheadLog, up_to_lsn: u64) !void {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.poisoned) return error.WalPoisoned;
 
         // Close the current file handle — compaction will rename a new file
@@ -678,8 +678,8 @@ pub const WriteAheadLog = struct {
     /// If `after_lsn` is 0, truncates the entire file (all records removed).
     /// Thread-safe: acquires internal mutex.
     pub fn truncateAfter(self: *WriteAheadLog, after_lsn: u64) !void {
-        self.mu.lock();
-        defer self.mu.unlock();
+        self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.poisoned) return error.WalPoisoned;
 
         // Scan forward from byte 0 to find the end position of the last
@@ -739,8 +739,8 @@ pub const WriteAheadLog = struct {
     /// Return the LSN of the most recently appended record (0 if empty).
     /// Thread-safe: acquires shared lock (PAR-0005).
     pub fn currentLsn(self: *WriteAheadLog) u64 {
-        self.mu.lockShared();
-        defer self.mu.unlockShared();
+        self.mu.lockSharedUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlockShared(std.Io.Threaded.global_single_threaded.io());
         return self.current_lsn;
     }
 
@@ -748,8 +748,8 @@ pub const WriteAheadLog = struct {
     /// the file was first opened, if it has never been compacted).
     /// Thread-safe: acquires shared lock (PAR-0005).
     pub fn bytesSinceCompact(self: *WriteAheadLog) u64 {
-        self.mu.lockShared();
-        defer self.mu.unlockShared();
+        self.mu.lockSharedUncancelable(std.Io.Threaded.global_single_threaded.io());
+        defer self.mu.unlockShared(std.Io.Threaded.global_single_threaded.io());
         return self.bytes_since_compact;
     }
 
@@ -763,9 +763,9 @@ pub const WriteAheadLog = struct {
     /// write position.  Call `Iterator.deinit` when done.
     /// Thread-safe: acquires shared lock briefly to snapshot configuration (PAR-0005).
     pub fn iterator(self: *WriteAheadLog, from_lsn: u64) !Iterator {
-        self.mu.lockShared();
+        self.mu.lockSharedUncancelable(std.Io.Threaded.global_single_threaded.io());
         const enc_key = if (self.options.encryption_key) |k| k else null;
-        self.mu.unlockShared();
+        self.mu.unlockShared(std.Io.Threaded.global_single_threaded.io());
         const read_file = try self.dir.openFile(self.filename, .{ .mode = .read_only });
         return Iterator.init(
             self.allocator,
