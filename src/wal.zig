@@ -174,7 +174,7 @@ pub const WriteAheadLog = struct {
     /// Internal read-write lock protecting all mutable state (PAR-0005).
     /// Writers (append, appendBatch, sync, compact) acquire exclusive access.
     /// Readers (currentLsn, bytesSinceCompact, iterator) acquire shared access.
-    mu: std.Io.RwLock = .{},
+    mu: std.Io.RwLock = std.Io.RwLock.init,
 
     // -------------------------------------------------------------------------
     // Lifecycle
