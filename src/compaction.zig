@@ -287,7 +287,8 @@ pub fn compact(
     // This phase is format-agnostic: we copy raw bytes regardless of whether
     // records are encrypted or plaintext.
 
-    // seekTo removed in 0.16 — using positional I/O
+    // Position source cursor at the first kept record for streaming bulk copy.
+    _ = std.c.lseek(src.handle, @intCast(kept_offset), 0);
 
     const tmp = try createTempFile(dir, tmp_name);
     errdefer {
