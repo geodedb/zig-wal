@@ -40,16 +40,19 @@ provides a single, well-tested, optionally-encrypted WAL for any Zig application
 **Location:** `geode/src/wal.zig`
 
 **Record format (plaintext):**
-```
+
+```text
 [u64: LSN][u64: txn_id][u8: op_type][u32: payload_len][payload][u32: CRC32]
 ```
 
 **Record format (encrypted):**
-```
+
+```text
 [u32: encrypted_blob_len][MAGIC "GEOTDEFL" (8)][nonce (12)][tag (16)][ciphertext]
 ```
 
 **Key characteristics:**
+
 - LSN-based ordering (monotonically increasing sequence numbers)
 - 10 domain-specific operation types (CreateNode, CreateEdge, etc.)
 - Tightly coupled to `GraphStore` for replay (calls `createNodeWithId`, etc.)
@@ -61,6 +64,7 @@ provides a single, well-tested, optionally-encrypted WAL for any Zig application
 - Encrypted compaction buffers kept records (capped at 4MB)
 
 **Geode-specific concerns (NOT extracted):**
+
 - `WalRecord` union type and serialization/deserialization
 - `GraphStore` replay integration
 - Mutation callback mechanism
@@ -72,11 +76,13 @@ provides a single, well-tested, optionally-encrypted WAL for any Zig application
 **Location:** `zig/raft/src/file_storage.zig`
 
 **Record format:**
-```
+
+```text
 [u32: data_len][u64: index][u64: term][u8: kind][data][u32: CRC32]
 ```
 
 **Key characteristics:**
+
 - Raft log index ordering (monotonically increasing)
 - 3 entry kinds (noop, normal, config)
 - In-memory `ArrayList(IndexEntry)` for O(1) term lookups by raft_index
@@ -87,6 +93,7 @@ provides a single, well-tested, optionally-encrypted WAL for any Zig application
 - Atomic compaction via temp file + rename
 
 **Raft-specific concerns (NOT extracted):**
+
 - `rpc.Entry` structure (index, term, kind, data)
 - `state.HardState` persistence
 - `rpc.Snapshot` persistence
@@ -134,7 +141,7 @@ The generic WAL engine handles:
 
 #### Plaintext Record
 
-```
+```text
 Offset  Size  Field        Description
 ─────────────────────────────────────────────────────
 0       8     lsn          Log Sequence Number (u64 LE, assigned by WAL)
@@ -152,17 +159,17 @@ Total: 16 + payload_len bytes per record
 The LSN is assigned by the WAL, monotonically increasing from 1. Callers use
 LSNs as watermarks for compaction, checkpointing, and replay-from.
 
-> **Design note:** The Geode WAL uses a 21-byte header (LSN + txn_id + op_type
-> + payload_len). The Raft WAL also uses 21 bytes (data_len + index + term +
-> kind). By moving domain fields into the payload, we reduce the fixed header
-> to 12 bytes while keeping the WAL generic. Callers prepend their own header
-> inside the payload.
+> **Design note:** The Geode WAL uses a 21-byte header (LSN + txn_id +
+> op_type + payload_len). The Raft WAL also uses 21 bytes (data_len + index +
+> term + kind). By moving domain fields into the payload, we reduce the fixed
+> header to 12 bytes while keeping the WAL generic. Callers prepend their own
+> header inside the payload.
 
 #### Encrypted Record
 
 When encryption is enabled, each record is wrapped:
 
-```
+```text
 Offset  Size  Field            Description
 ─────────────────────────────────────────────────────
 0       4     blob_len         Total encrypted blob size (u32 LE)
@@ -181,7 +188,7 @@ clearly in error messages.
 
 ### 3.3 Module Structure
 
-```
+```text
 src/
 ├── root.zig            # Public API re-exports
 ├── wal.zig             # Core WAL engine (WriteAheadLog struct)
@@ -482,7 +489,7 @@ protects all mutable state:
 
 ### Parallel Batch Serialization (PAR-0002)
 
-When `Options.thread_pool` is set to a `*spice.ThreadPool`, batch append
+When `Options.thread_pool` is set to a `*ThreadPool`, batch append
 operations (`appendBatch`, `appendBatchWithLsns`) parallelize record
 serialization (CRC32 computation + optional AES-256-GCM encryption) across
 available cores using heartbeat-scheduled fork/join. The file write, LSN
@@ -496,7 +503,7 @@ thread-pool overhead for single-threaded callers.
 
 Each `WriteAheadLog` instance is fully independent — no shared state between
 instances. Callers managing multiple WAL instances (e.g., Geode graph WAL +
-Raft consensus WAL) should use an external event loop or `spice.ThreadPool`
+Raft consensus WAL) should use an external event loop or `thread_pool.ThreadPool`
 for coordination. The WAL library does not provide multiplexing primitives.
 
 ### Recovery & Compaction: Sequential by Design
@@ -618,6 +625,7 @@ After the library is complete and tested:
 ### Property-Based Invariants
 
 Every test verifies:
+
 1. **LSN monotonicity** — LSNs always increase
 2. **CRC integrity** — every record passes CRC verification after write
 3. **Recovery completeness** — all records written before last fsync are recoverable

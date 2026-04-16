@@ -16,6 +16,7 @@ make test-all-optimizations  # Unit tests at all optimization levels
 ```
 
 Run tests at a specific optimization level:
+
 ```bash
 zig build test -Doptimize=ReleaseSafe --summary all
 ```
@@ -28,7 +29,7 @@ Data flow: `caller payload → record.serialize (frame+CRC) → [optional encryp
 
 ### Module dependency graph
 
-```
+```text
 root.zig (public API re-exports)
   └── wal.zig (WriteAheadLog struct — orchestrator)
         ├── record.zig (serialize/deserialize, CRC32, verifyCrc, file I/O)
@@ -48,16 +49,18 @@ root.zig (public API re-exports)
 
 ### Record format (plaintext)
 
-```
+```text
 [lsn: u64 LE][payload_len: u32 LE][payload: N bytes][crc32: u32 LE]
 ```
+
 Header: 12 bytes. CRC covers header+payload bytes. Minimum record: 16 bytes.
 
 ### Encrypted record format
 
-```
+```text
 [blob_len: u32 LE]["ZIGWALE\0" magic][nonce: 12][tag: 16][ciphertext]
 ```
+
 Overhead: 40 bytes. Detection: peek 12 bytes, check for magic at offset 4.
 
 ## Key Conventions
@@ -67,7 +70,7 @@ Overhead: 40 bytes. Detection: peek 12 bytes, check for magic at offset 4.
 - CRC variant: `std.hash.crc.Crc32IsoHdlc`
 - Crypto: `std.crypto.aead.aes_gcm.Aes256Gcm`
 - Thread-safe: internal `std.Thread.RwLock` (exclusive for writes, shared for reads)
-- Optional `spice` thread pool for parallel batch serialization (PAR-0002)
+- Optional `thread-pool` for parallel batch serialization (PAR-0002)
 - No global/singleton state — everything is instance-based
 - Unit tests colocated in source files; integration/scenario tests in `tests/`
 - Temp files use `{filename}.tmp` pattern (not hardcoded names)
@@ -75,6 +78,7 @@ Overhead: 40 bytes. Detection: peek 12 bytes, check for magic at offset 4.
 ## Source Implementations
 
 Unified from two production WALs:
+
 - **Geode**: `~/src/gl/devnw/codepros/geode/geode/src/wal.zig`
 - **Raft**: `~/src/gl/devnw/zig/raft/src/file_storage.zig`
 
