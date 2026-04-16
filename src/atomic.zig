@@ -33,6 +33,7 @@ pub const TMP_NAME_BUF_SIZE = 256;
 /// Returns `error.FilenameTooLong` if `filename` is too long to derive a
 /// temp name from (limit: 251 bytes for the base name).
 pub fn atomicWriteFile(dir: std.Io.Dir, filename: []const u8, data: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
     var tmp_name_buf: [TMP_NAME_BUF_SIZE]u8 = undefined;
     const tmp_name = std.fmt.bufPrint(&tmp_name_buf, "{s}.tmp", .{filename}) catch return error.FilenameTooLong;
 
@@ -40,22 +41,22 @@ pub fn atomicWriteFile(dir: std.Io.Dir, filename: []const u8, data: []const u8) 
     // Note: A narrow TOCTOU window exists between delete and create. A fully
     // race-free solution would require O_TMPFILE+linkat (Linux-specific),
     // which is not available in Zig's std.fs API (SEC-0011).
-    dir.deleteFile(tmp_name) catch {};
-    var tmp_file = try dir.createFile(tmp_name, .{ .truncate = true, .mode = 0o600 });
+    dir.deleteFile(io, tmp_name) catch {};
+    var tmp_file = try dir.createFile(io, tmp_name, .{ .truncate = true, .permissions = std.Io.File.Permissions.fromMode(0o600) });
     errdefer {
-        tmp_file.close();
-        dir.deleteFile(tmp_name) catch {};
+        tmp_file.close(io);
+        dir.deleteFile(io, tmp_name) catch {};
     }
 
-    try tmp_file.writeAll(data);
-    try tmp_file.sync();
+    try tmp_file.writeStreamingAll(io, data);
+    try tmp_file.sync(io);
     // Rename before close: if rename() fails the fd is still open and the
     // caller's errdefer can close it safely. Closing first would make the
     // errdefer double-close a stale fd → Zig's std.posix.close treats EBADF
     // as unreachable (UB in ReleaseFast/ReleaseSmall, panic otherwise).
     // SEC-0035.
-    try dir.rename(tmp_name, filename);
-    tmp_file.close();
+    try dir.rename(tmp_name, dir, filename, io);
+    tmp_file.close(io);
     // Note: A directory fsync after rename would make the directory entry fully
     // durable on all filesystems. However, Zig's std.Io.Dir opens directories
     // with O_PATH, which does not support fsync. Opening a separate read-only
@@ -77,7 +78,7 @@ test "atomicWriteFile: creates file with correct contents" {
     const content = "hello world";
     try atomicWriteFile(tmp_dir.dir, "test.dat", content);
 
-    const read_back = try tmp_dir.dir.readFileAlloc(std.testing.allocator, "test.dat", 4096);
+    const read_back = try tmp_dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "test.dat", std.testing.allocator, std.Io.Limit.limited(4096));
     defer std.testing.allocator.free(read_back);
 
     try std.testing.expectEqualStrings(content, read_back);
@@ -90,7 +91,7 @@ test "atomicWriteFile: overwrites existing file" {
     try atomicWriteFile(tmp_dir.dir, "test.dat", "version 1");
     try atomicWriteFile(tmp_dir.dir, "test.dat", "version 2");
 
-    const read_back = try tmp_dir.dir.readFileAlloc(std.testing.allocator, "test.dat", 4096);
+    const read_back = try tmp_dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "test.dat", std.testing.allocator, std.Io.Limit.limited(4096));
     defer std.testing.allocator.free(read_back);
 
     try std.testing.expectEqualStrings("version 2", read_back);
@@ -102,7 +103,7 @@ test "atomicWriteFile: empty data" {
 
     try atomicWriteFile(tmp_dir.dir, "empty.dat", "");
 
-    const read_back = try tmp_dir.dir.readFileAlloc(std.testing.allocator, "empty.dat", 4096);
+    const read_back = try tmp_dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "empty.dat", std.testing.allocator, std.Io.Limit.limited(4096));
     defer std.testing.allocator.free(read_back);
 
     try std.testing.expectEqualStrings("", read_back);

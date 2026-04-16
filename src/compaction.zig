@@ -57,9 +57,10 @@ pub const CompactResult = struct {
 /// Create a temporary file, removing any stale one first (SEC-0005).
 /// The caller must set up an errdefer for close+delete on the returned handle.
 fn createTempFile(dir: std.Io.Dir, tmp_name: []const u8) !std.Io.File {
+    const io = std.Io.Threaded.global_single_threaded.io();
     // Note: A narrow TOCTOU window exists between delete and create (SEC-0011).
-    dir.deleteFile(tmp_name) catch {};
-    return dir.createFile(tmp_name, .{ .truncate = true, .mode = 0o600 });
+    dir.deleteFile(io, tmp_name) catch {};
+    return dir.createFile(io, tmp_name, .{ .truncate = true, .permissions = std.Io.File.Permissions.fromMode(0o600) });
 }
 
 /// Sync, close, and atomically rename a temporary file over the target.
@@ -67,9 +68,9 @@ fn createTempFile(dir: std.Io.Dir, tmp_name: []const u8) !std.Io.File {
 /// leave the fd closed — the caller's errdefer can still safely close it
 /// (SEC-0035: avoids double-close → unreachable/UB on EBADF).
 fn finalizeTempFile(dir: std.Io.Dir, tmp: std.Io.File, tmp_name: []const u8, filename: []const u8) !void {
-    try tmp.sync();
-    try dir.rename(tmp_name, filename);
-    tmp.close();
+    try tmp.sync(std.Io.Threaded.global_single_threaded.io());
+    try dir.rename(tmp_name, dir, filename, std.Io.Threaded.global_single_threaded.io());
+    tmp.close(std.Io.Threaded.global_single_threaded.io());
     // Directory fsync omitted — see SEC-0020 comment in atomic.zig.
 }
 
@@ -98,9 +99,10 @@ fn userSpaceCopy(src: std.Io.File, dst: std.Io.File) !u64 {
     var copy_buf: [COPY_BUF_SIZE]u8 = undefined;
     var bytes_written: u64 = 0;
     while (true) {
-        const n = try src.read(&copy_buf);
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const n = try src.readStreaming(io, &.{&copy_buf});
         if (n == 0) break;
-        try dst.writeAll(copy_buf[0..n]);
+        try dst.writeStreamingAll(io, copy_buf[0..n]);
         bytes_written += n;
     }
     return bytes_written;
@@ -120,7 +122,7 @@ fn zeroCopyTransfer(src: std.Io.File, dst: std.Io.File) !u64 {
     var bytes_written: u64 = 0;
     while (true) {
         const n = std.os.linux.copy_file_range(src.handle, null, dst.handle, null, COPY_BUF_SIZE, 0);
-        switch (std.os.linux.E.init(n)) {
+        switch (std.os.linux.errno(n)) {
             .SUCCESS => {},
             .INTR => continue, // Interrupted by signal — retry (SEC NEW-6).
             .NOSYS, .XDEV, .INVAL => return error.OperationNotSupported,
@@ -177,8 +179,8 @@ pub fn compact(
     const tmp_name = std.fmt.bufPrint(&tmp_name_buf, "{s}.tmp", .{filename}) catch return error.FilenameTooLong;
 
     // Open source file for reading.
-    const src = try dir.openFile(filename, .{ .mode = .read_only });
-    defer src.close();
+    const src = try dir.openFile(std.Io.Threaded.global_single_threaded.io(), filename, .{ .mode = .read_only });
+    defer src.close(std.Io.Threaded.global_single_threaded.io());
 
     // ---- Scan phase ---------------------------------------------------------
     // Walk every record, tracking the offset of the first kept record.
@@ -201,7 +203,7 @@ pub fn compact(
 
         // Read DETECT_PEEK_SIZE bytes to detect the record type.
         var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
-        const peek_n = try src.readAll(&peek_buf);
+        const peek_n = try src.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, current_offset);
         if (peek_n < encryption.DETECT_PEEK_SIZE) break; // EOF or torn header
 
         if (encryption_key != null and encryption.isEncrypted(&peek_buf)) {
@@ -245,8 +247,7 @@ pub fn compact(
                 }
             }
 
-            // Seek past payload + CRC without reading them.
-            try src.seekBy(@as(i64, @intCast(@as(usize, hdr.payload_len) + record.CRC_SIZE)));
+            // Advance offset past payload + CRC (positional I/O, no seek needed).
             current_offset += @as(u64, record.HEADER_SIZE) + @as(u64, hdr.payload_len) + @as(u64, record.CRC_SIZE);
         }
     }
@@ -257,8 +258,8 @@ pub fn compact(
         // Every record is below (or at) the watermark → empty the file.
         const tmp = try createTempFile(dir, tmp_name);
         errdefer {
-            tmp.close();
-            dir.deleteFile(tmp_name) catch {};
+            tmp.close(std.Io.Threaded.global_single_threaded.io());
+            dir.deleteFile(std.Io.Threaded.global_single_threaded.io(), tmp_name) catch {};
         }
         try finalizeTempFile(dir, tmp, tmp_name, filename);
 
@@ -269,7 +270,7 @@ pub fn compact(
 
     if (kept_offset == 0) {
         // All records are above the watermark → nothing to do.
-        const stat = try src.stat();
+        const stat = try src.stat(std.Io.Threaded.global_single_threaded.io());
         return CompactResult{
             .records_kept = records_kept,
             .new_size = stat.size,
@@ -281,12 +282,12 @@ pub fn compact(
     // This phase is format-agnostic: we copy raw bytes regardless of whether
     // records are encrypted or plaintext.
 
-    try src.seekTo(kept_offset);
+    // seekTo removed in 0.16 — using positional I/O
 
     const tmp = try createTempFile(dir, tmp_name);
     errdefer {
-        tmp.close();
-        dir.deleteFile(tmp_name) catch {};
+        tmp.close(std.Io.Threaded.global_single_threaded.io());
+        dir.deleteFile(std.Io.Threaded.global_single_threaded.io(), tmp_name) catch {};
     }
 
     const bytes_written = try bulkCopy(src, tmp, zero_copy);
@@ -309,19 +310,19 @@ test "compact: removes records below watermark" {
     defer tmp_dir.cleanup();
 
     // Write 5 records with LSNs 1..5.
-    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    const wf = try tmp_dir.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .truncate = true });
     for (1..6) |lsn| {
         _ = try record.writeToFile(allocator, wf, @intCast(lsn), "payload");
     }
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Compact: keep only records with LSN > 3.
     const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, null, false);
     try std.testing.expectEqual(@as(u64, 2), result.records_kept);
 
     // Re-open and verify only LSNs 4 and 5 remain.
-    const rf = try tmp_dir.dir.openFile("wal.log", .{ .mode = .read_only });
-    defer rf.close();
+    const rf = try tmp_dir.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .mode = .read_only });
+    defer rf.close(std.Io.Threaded.global_single_threaded.io());
 
     var expected_lsn: u64 = 4;
     while (true) {
@@ -342,11 +343,11 @@ test "compact: all records removed" {
     defer tmp_dir.cleanup();
 
     // Write 3 records.
-    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    const wf = try tmp_dir.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .truncate = true });
     for (1..4) |lsn| {
         _ = try record.writeToFile(allocator, wf, @intCast(lsn), "data");
     }
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Compact above max LSN → all records removed.
     const result = try compact(allocator, tmp_dir.dir, "wal.log", 100, null, false);
@@ -354,7 +355,7 @@ test "compact: all records removed" {
     try std.testing.expectEqual(@as(u64, 0), result.new_size);
 
     // File should exist but be empty.
-    const stat = try tmp_dir.dir.statFile("wal.log");
+    const stat = try tmp_dir.dir.statFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{});
     try std.testing.expectEqual(@as(u64, 0), stat.size);
 }
 
@@ -364,14 +365,14 @@ test "compact: no records removed" {
     defer tmp_dir.cleanup();
 
     // Write 3 records with LSNs 1..3.
-    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    const wf = try tmp_dir.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .truncate = true });
     for (1..4) |lsn| {
         _ = try record.writeToFile(allocator, wf, @intCast(lsn), "keep");
     }
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Record the original file size.
-    const original_stat = try tmp_dir.dir.statFile("wal.log");
+    const original_stat = try tmp_dir.dir.statFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{});
 
     // Compact at watermark 0 → all records have LSN > 0, so all kept.
     const result = try compact(allocator, tmp_dir.dir, "wal.log", 0, null, false);
@@ -379,7 +380,7 @@ test "compact: no records removed" {
     try std.testing.expectEqual(original_stat.size, result.new_size);
 
     // Verify file is unchanged.
-    const new_stat = try tmp_dir.dir.statFile("wal.log");
+    const new_stat = try tmp_dir.dir.statFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{});
     try std.testing.expectEqual(original_stat.size, new_stat.size);
 }
 
@@ -389,26 +390,36 @@ test "compact: append after compact works" {
     defer tmp_dir.cleanup();
 
     // Write records LSN 1..4.
-    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    const wf = try tmp_dir.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .truncate = true });
     for (1..5) |lsn| {
         _ = try record.writeToFile(allocator, wf, @intCast(lsn), "before");
     }
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Compact: keep LSN > 2 (keeps LSNs 3 and 4).
     const result = try compact(allocator, tmp_dir.dir, "wal.log", 2, null, false);
     try std.testing.expectEqual(@as(u64, 2), result.records_kept);
 
     // Append two more records: LSN 5 and 6.
-    const af = try tmp_dir.dir.openFile("wal.log", .{ .mode = .write_only });
-    try af.seekFromEnd(0);
-    _ = try record.writeToFile(allocator, af, 5, "after");
-    _ = try record.writeToFile(allocator, af, 6, "after");
-    af.close();
+    // Use createFile with truncate=false to append via streaming write at end.
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const af = try tmp_dir.dir.openFile(io, "wal.log", .{ .mode = .read_write });
+    // Get current file size to position append correctly.
+    const file_len = try af.length(io);
+    // Serialize records into a buffer and write positionally at the end.
+    const rec5_size = record.HEADER_SIZE + "after".len + record.CRC_SIZE;
+    const rec6_size = record.HEADER_SIZE + "after".len + record.CRC_SIZE;
+    var rec5_buf: [rec5_size]u8 = undefined;
+    var rec6_buf: [rec6_size]u8 = undefined;
+    record.serializeInto(&rec5_buf, 5, "after");
+    record.serializeInto(&rec6_buf, 6, "after");
+    try af.writePositionalAll(io, &rec5_buf, file_len);
+    try af.writePositionalAll(io, &rec6_buf, file_len + rec5_size);
+    af.close(io);
 
     // Read back all 4 records and verify.
-    const rf = try tmp_dir.dir.openFile("wal.log", .{ .mode = .read_only });
-    defer rf.close();
+    const rf = try tmp_dir.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .mode = .read_only });
+    defer rf.close(std.Io.Threaded.global_single_threaded.io());
 
     const expected_lsns = [_]u64{ 3, 4, 5, 6 };
     const expected_payloads = [_][]const u8{ "before", "before", "after", "after" };
@@ -452,25 +463,25 @@ test "compact: encrypted — removes records below watermark (QA-0025)" {
     const key = test_key;
 
     // Write 5 encrypted records with LSNs 1..5.
-    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    const wf = try tmp_dir.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .truncate = true });
     for (1..6) |lsn| {
         _ = try encryption.encryptAndWriteToFile(allocator, wf, &key, @intCast(lsn), "payload");
     }
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Compact: keep only records with LSN > 3.
     const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, &key, false);
     try std.testing.expectEqual(@as(u64, 2), result.records_kept);
 
     // Re-open and verify only LSNs 4 and 5 remain by reading encrypted records.
-    const rf = try tmp_dir.dir.openFile("wal.log", .{ .mode = .read_only });
-    defer rf.close();
+    const rf = try tmp_dir.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .mode = .read_only });
+    defer rf.close(std.Io.Threaded.global_single_threaded.io());
 
     var expected_lsn: u64 = 4;
     while (true) {
         // Peek to detect record.
         var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
-        const peek_n = try rf.readAll(&peek_buf);
+        const peek_n = try rf.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
         if (peek_n < encryption.DETECT_PEEK_SIZE) break;
 
         const blob_result = try encryption.readEncryptedBlob(allocator, rf, &peek_buf) orelse break;
@@ -495,11 +506,11 @@ test "compact: encrypted — all records removed (QA-0025)" {
     const key = test_key;
 
     // Write 3 encrypted records.
-    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    const wf = try tmp_dir.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .truncate = true });
     for (1..4) |lsn| {
         _ = try encryption.encryptAndWriteToFile(allocator, wf, &key, @intCast(lsn), "data");
     }
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Compact above max LSN → all records removed.
     const result = try compact(allocator, tmp_dir.dir, "wal.log", 100, &key, false);
@@ -507,7 +518,7 @@ test "compact: encrypted — all records removed (QA-0025)" {
     try std.testing.expectEqual(@as(u64, 0), result.new_size);
 
     // File should exist but be empty.
-    const stat = try tmp_dir.dir.statFile("wal.log");
+    const stat = try tmp_dir.dir.statFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{});
     try std.testing.expectEqual(@as(u64, 0), stat.size);
 }
 
@@ -519,14 +530,14 @@ test "compact: encrypted — no records removed (QA-0025)" {
     const key = test_key;
 
     // Write 3 encrypted records with LSNs 1..3.
-    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    const wf = try tmp_dir.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .truncate = true });
     for (1..4) |lsn| {
         _ = try encryption.encryptAndWriteToFile(allocator, wf, &key, @intCast(lsn), "keep");
     }
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Record the original file size.
-    const original_stat = try tmp_dir.dir.statFile("wal.log");
+    const original_stat = try tmp_dir.dir.statFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{});
 
     // Compact at watermark 0 → all records have LSN > 0, so all kept.
     const result = try compact(allocator, tmp_dir.dir, "wal.log", 0, &key, false);
@@ -534,7 +545,7 @@ test "compact: encrypted — no records removed (QA-0025)" {
     try std.testing.expectEqual(original_stat.size, result.new_size);
 
     // Verify file is unchanged.
-    const new_stat = try tmp_dir.dir.statFile("wal.log");
+    const new_stat = try tmp_dir.dir.statFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{});
     try std.testing.expectEqual(original_stat.size, new_stat.size);
 }
 
@@ -547,19 +558,19 @@ test "compact: zero-copy removes records below watermark (PERF-0014)" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    const wf = try tmp_dir.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .truncate = true });
     for (1..6) |lsn| {
         _ = try record.writeToFile(allocator, wf, @intCast(lsn), "payload");
     }
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Compact with zero_copy=true.
     const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, null, true);
     try std.testing.expectEqual(@as(u64, 2), result.records_kept);
 
     // Verify only LSNs 4 and 5 remain.
-    const rf = try tmp_dir.dir.openFile("wal.log", .{ .mode = .read_only });
-    defer rf.close();
+    const rf = try tmp_dir.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .mode = .read_only });
+    defer rf.close(std.Io.Threaded.global_single_threaded.io());
 
     var expected_lsn: u64 = 4;
     while (true) {
@@ -577,11 +588,11 @@ test "compact: zero-copy all records removed (PERF-0014)" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    const wf = try tmp_dir.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .truncate = true });
     for (1..4) |lsn| {
         _ = try record.writeToFile(allocator, wf, @intCast(lsn), "data");
     }
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     const result = try compact(allocator, tmp_dir.dir, "wal.log", 100, null, true);
     try std.testing.expectEqual(@as(u64, 0), result.records_kept);
@@ -595,23 +606,23 @@ test "compact: zero-copy encrypted (PERF-0014)" {
 
     const key = test_key;
 
-    const wf = try tmp_dir.dir.createFile("wal.log", .{ .truncate = true });
+    const wf = try tmp_dir.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .truncate = true });
     for (1..6) |lsn| {
         _ = try encryption.encryptAndWriteToFile(allocator, wf, &key, @intCast(lsn), "payload");
     }
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     const result = try compact(allocator, tmp_dir.dir, "wal.log", 3, &key, true);
     try std.testing.expectEqual(@as(u64, 2), result.records_kept);
 
     // Verify records.
-    const rf = try tmp_dir.dir.openFile("wal.log", .{ .mode = .read_only });
-    defer rf.close();
+    const rf = try tmp_dir.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .mode = .read_only });
+    defer rf.close(std.Io.Threaded.global_single_threaded.io());
 
     var expected_lsn: u64 = 4;
     while (true) {
         var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
-        const peek_n = try rf.readAll(&peek_buf);
+        const peek_n = try rf.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
         if (peek_n < encryption.DETECT_PEEK_SIZE) break;
         const blob_result = try encryption.readEncryptedBlob(allocator, rf, &peek_buf) orelse break;
         defer {

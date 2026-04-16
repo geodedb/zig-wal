@@ -32,6 +32,12 @@ const BufferedSource = struct {
     pub fn readAll(self: BufferedSource, buf: []u8) !usize {
         return self.reader.readSliceShort(buf);
     }
+
+    /// Positional-read shim: the buffered reader is sequential, so `_offset`
+    /// is ignored (the underlying File.Reader already tracks position).
+    pub fn readPositionalAll(self: BufferedSource, _: std.Io, buf: []u8, _: u64) !usize {
+        return self.reader.readSliceShort(buf);
+    }
 };
 
 /// A forward iterator over WAL records.
@@ -66,7 +72,7 @@ pub const Iterator = struct {
             ._done = false,
             .encryption_key = encryption_key,
             ._io_buf = io_buf,
-            ._file_reader = file.reader(io_buf),
+            ._file_reader = file.reader(std.Io.Threaded.global_single_threaded.io(), io_buf),
         };
     }
 
@@ -239,7 +245,7 @@ pub const Iterator = struct {
             encryption.secureZero(key);
         }
         self.allocator.free(self._io_buf); // PERF-0021
-        self._file.close();
+        self._file.close(std.Io.Threaded.global_single_threaded.io());
     }
 };
 
@@ -253,11 +259,11 @@ test "iterator: EOF on empty file returns null" {
     defer tmp.cleanup();
 
     // Create an empty file.
-    const wf = try tmp.dir.createFile("empty.wal", .{ .truncate = true });
-    wf.close();
+    const wf = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "empty.wal", .{ .truncate = true });
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Open read-only for iteration.
-    const rf = try tmp.dir.openFile("empty.wal", .{ .mode = .read_only });
+    const rf = try tmp.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "empty.wal", .{ .mode = .read_only });
 
     var iter = try Iterator.init(allocator, rf, 0, null);
     defer iter.deinit();
@@ -276,12 +282,12 @@ test "iterator: single plaintext record iteration" {
     defer tmp.cleanup();
 
     // Write one record.
-    const wf = try tmp.dir.createFile("single.wal", .{ .truncate = true });
+    const wf = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "single.wal", .{ .truncate = true });
     _ = try record.writeToFile(allocator, wf, 1, "hello");
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Open read-only.
-    const rf = try tmp.dir.openFile("single.wal", .{ .mode = .read_only });
+    const rf = try tmp.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "single.wal", .{ .mode = .read_only });
 
     var iter = try Iterator.init(allocator, rf, 0, null);
     defer iter.deinit();
@@ -303,14 +309,14 @@ test "iterator: multiple records iteration verifies all LSNs" {
     defer tmp.cleanup();
 
     // Write three records with distinct payloads.
-    const wf = try tmp.dir.createFile("multi.wal", .{ .truncate = true });
+    const wf = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "multi.wal", .{ .truncate = true });
     _ = try record.writeToFile(allocator, wf, 10, "alpha");
     _ = try record.writeToFile(allocator, wf, 20, "beta");
     _ = try record.writeToFile(allocator, wf, 30, "gamma");
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Open read-only.
-    const rf = try tmp.dir.openFile("multi.wal", .{ .mode = .read_only });
+    const rf = try tmp.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "multi.wal", .{ .mode = .read_only });
 
     var iter = try Iterator.init(allocator, rf, 0, null);
     defer iter.deinit();
@@ -336,16 +342,16 @@ test "iterator: from_lsn filtering skips records at or below threshold" {
     defer tmp.cleanup();
 
     // Write five records with LSNs 1..5.
-    const wf = try tmp.dir.createFile("filter.wal", .{ .truncate = true });
+    const wf = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "filter.wal", .{ .truncate = true });
     _ = try record.writeToFile(allocator, wf, 1, "one");
     _ = try record.writeToFile(allocator, wf, 2, "two");
     _ = try record.writeToFile(allocator, wf, 3, "three");
     _ = try record.writeToFile(allocator, wf, 4, "four");
     _ = try record.writeToFile(allocator, wf, 5, "five");
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Open read-only with from_lsn = 3 (skip LSNs 1, 2, 3).
-    const rf = try tmp.dir.openFile("filter.wal", .{ .mode = .read_only });
+    const rf = try tmp.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "filter.wal", .{ .mode = .read_only });
 
     var iter = try Iterator.init(allocator, rf, 3, null);
     defer iter.deinit();
@@ -373,7 +379,7 @@ test "iterator: corrupt CRC stops iteration" {
     defer tmp.cleanup();
 
     // Write a valid record first, then a corrupt record.
-    const wf = try tmp.dir.createFile("corrupt.wal", .{ .truncate = true });
+    const wf = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "corrupt.wal", .{ .truncate = true });
 
     // First record: valid.
     _ = try record.writeToFile(allocator, wf, 1, "good");
@@ -383,14 +389,14 @@ test "iterator: corrupt CRC stops iteration" {
     defer allocator.free(corrupt_buf);
     // Flip a byte in the CRC footer (last byte of the serialized record).
     corrupt_buf[corrupt_buf.len - 1] ^= 0xFF;
-    try wf.writeAll(corrupt_buf);
+    try wf.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), corrupt_buf);
 
     // Third record: valid (should never be reached).
     _ = try record.writeToFile(allocator, wf, 3, "unreachable");
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Open read-only.
-    const rf = try tmp.dir.openFile("corrupt.wal", .{ .mode = .read_only });
+    const rf = try tmp.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "corrupt.wal", .{ .mode = .read_only });
 
     var iter = try Iterator.init(allocator, rf, 0, null);
     defer iter.deinit();
@@ -414,7 +420,7 @@ test "iterator: oversized payload_len stops iteration (SEC-0004/QA-0024)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const wf = try tmp.dir.createFile("test.wal", .{ .truncate = true });
+    const wf = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "test.wal", .{ .truncate = true });
     _ = try record.writeToFile(allocator, wf, 1, "valid");
 
     // Craft oversized header
@@ -422,10 +428,10 @@ test "iterator: oversized payload_len stops iteration (SEC-0004/QA-0024)" {
     std.mem.writeInt(u64, bad_header[0..8], 2, .little);
     const huge_len: u32 = @intCast(record.MAX_RECORD_SIZE - record.HEADER_SIZE - record.CRC_SIZE + 1);
     std.mem.writeInt(u32, bad_header[8..12], huge_len, .little);
-    try wf.writeAll(&bad_header);
-    wf.close();
+    try wf.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &bad_header);
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
-    const rf = try tmp.dir.openFile("test.wal", .{ .mode = .read_only });
+    const rf = try tmp.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "test.wal", .{ .mode = .read_only });
 
     var iter = try Iterator.init(allocator, rf, 0, null);
     defer iter.deinit();
@@ -446,13 +452,13 @@ test "iterator: plaintext record rejected when encryption key is set (SEC-0038)"
     defer tmp.cleanup();
 
     // Write plaintext records.
-    const wf = try tmp.dir.createFile("test.wal", .{ .truncate = true });
+    const wf = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "test.wal", .{ .truncate = true });
     _ = try record.writeToFile(allocator, wf, 1, "plain-1");
     _ = try record.writeToFile(allocator, wf, 2, "plain-2");
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Open with an encryption key — iterator should reject plaintext records.
-    const rf = try tmp.dir.openFile("test.wal", .{ .mode = .read_only });
+    const rf = try tmp.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "test.wal", .{ .mode = .read_only });
     const key: [32]u8 = .{
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
         0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,

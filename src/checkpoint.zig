@@ -89,11 +89,11 @@ pub fn readCheckpoint(dir: std.Io.Dir, wal_filename: []const u8) ?Checkpoint {
     var ckpt_name_buf: [atomic.TMP_NAME_BUF_SIZE]u8 = undefined;
     const ckpt_name = std.fmt.bufPrint(&ckpt_name_buf, "{s}" ++ CHECKPOINT_SUFFIX, .{wal_filename}) catch return null;
 
-    const file = dir.openFile(ckpt_name, .{}) catch return null;
-    defer file.close();
+    const file = dir.openFile(std.Io.Threaded.global_single_threaded.io(), ckpt_name, .{}) catch return null;
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     var buf: [CHECKPOINT_SIZE]u8 = undefined;
-    const n = file.readAll(&buf) catch return null;
+    const n = file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &buf, 0) catch return null;
     if (n < CHECKPOINT_SIZE) return null;
 
     // Validate CRC.
@@ -114,7 +114,7 @@ pub fn readCheckpoint(dir: std.Io.Dir, wal_filename: []const u8) ?Checkpoint {
 pub fn deleteCheckpoint(dir: std.Io.Dir, wal_filename: []const u8) void {
     var ckpt_name_buf: [atomic.TMP_NAME_BUF_SIZE]u8 = undefined;
     const ckpt_name = std.fmt.bufPrint(&ckpt_name_buf, "{s}" ++ CHECKPOINT_SUFFIX, .{wal_filename}) catch return;
-    dir.deleteFile(ckpt_name) catch {};
+    dir.deleteFile(std.Io.Threaded.global_single_threaded.io(), ckpt_name) catch {};
 }
 
 // ============================================================================
@@ -160,10 +160,9 @@ test "readCheckpoint: corrupt CRC returns null" {
     try writeCheckpoint(tmp.dir, "wal.log", info);
 
     // Corrupt the file.
-    const file = try tmp.dir.openFile("wal.log.ckpt", .{ .mode = .read_write });
-    defer file.close();
-    try file.seekTo(0);
-    try file.writeAll(&[_]u8{0xFF}); // corrupt first byte
+    const file = try tmp.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "wal.log.ckpt", .{ .mode = .read_write });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
+    try file.writePositionalAll(std.Io.Threaded.global_single_threaded.io(), &[_]u8{0xFF}, 0); // corrupt first byte
 
     const result = readCheckpoint(tmp.dir, "wal.log");
     try std.testing.expect(result == null);
@@ -174,9 +173,9 @@ test "readCheckpoint: truncated file returns null" {
     defer tmp.cleanup();
 
     // Write only 10 bytes — less than CHECKPOINT_SIZE.
-    const file = try tmp.dir.createFile("wal.log.ckpt", .{});
-    defer file.close();
-    try file.writeAll(&[_]u8{0} ** 10);
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log.ckpt", .{});
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &[_]u8{0} ** 10);
 
     const result = readCheckpoint(tmp.dir, "wal.log");
     try std.testing.expect(result == null);

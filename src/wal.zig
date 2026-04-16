@@ -169,7 +169,7 @@ pub const WriteAheadLog = struct {
     /// Internal read-write lock protecting all mutable state (PAR-0005).
     /// Writers (append, appendBatch, sync, compact) acquire exclusive access.
     /// Readers (currentLsn, bytesSinceCompact, iterator) acquire shared access.
-    mu: std.Io.RwLock = std.Io.RwLock.init,
+    mu: std.Io.RwLock = .init,
 
     // -------------------------------------------------------------------------
     // Lifecycle
@@ -194,17 +194,18 @@ pub const WriteAheadLog = struct {
 
         // Open existing file, or create a new one with read+write access.
         // New files get 0o600 permissions (owner-only) for defense-in-depth (SEC-0015).
-        const file = dir.openFile(filename, .{ .mode = .read_write }) catch |err| switch (err) {
-            error.FileNotFound => try dir.createFile(filename, .{ .read = true, .mode = 0o600 }),
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const file = dir.openFile(io, filename, .{ .mode = .read_write }) catch |err| switch (err) {
+            error.FileNotFound => try dir.createFile(io, filename, .{ .read = true, .permissions = std.Io.File.Permissions.fromMode(0o600) }),
             else => return err,
         };
-        errdefer file.close();
+        errdefer file.close(std.Io.Threaded.global_single_threaded.io());
 
         // Tighten permissions on existing files to owner-only (SEC-0021).
         // Files created before the SEC-0015 fix may have world-readable
         // permissions. This is best-effort — fails silently on non-POSIX
         // platforms or when the caller is not the file owner.
-        std.posix.fchmod(file.handle, 0o600) catch {};
+        file.setPermissions(io, std.Io.File.Permissions.fromMode(0o600)) catch {};
 
         // Recover WAL state: try checkpoint-accelerated path first if enabled,
         // then fall back to full scan (PERF-0013).
@@ -226,7 +227,7 @@ pub const WriteAheadLog = struct {
                         // may point mid-record (forged or corrupt). Fall back to
                         // full scan rather than trusting the checkpoint's valid_end,
                         // which would cause init() to truncate valid data (SEC NEW-3).
-                        const stat = try file.stat();
+                        const stat = try file.stat(std.Io.Threaded.global_single_threaded.io());
                         if (result.valid_end == ckpt.valid_end and stat.size > ckpt.valid_end) {
                             break :blk if (options.encryption_key) |*key|
                                 try recovery_mod.recoverWithKey(allocator, file, key)
@@ -251,10 +252,10 @@ pub const WriteAheadLog = struct {
         };
 
         // Truncate any bytes beyond the last valid record (torn writes, etc.).
-        try file.setEndPos(info.valid_end);
+        try file.setLength(std.Io.Threaded.global_single_threaded.io(), info.valid_end);
 
         // Position cursor at the write tail.
-        try file.seekTo(info.valid_end);
+        // seekTo removed in 0.16 — using positional I/O
 
         return WriteAheadLog{
             .allocator = allocator,
@@ -293,7 +294,7 @@ pub const WriteAheadLog = struct {
         // ReleaseFast/ReleaseSmall (UB). Skip the close when poisoned
         // (SEC-0037, CWE-675).
         if (!self.poisoned) {
-            self.file.close();
+            self.file.close(std.Io.Threaded.global_single_threaded.io());
         }
     }
 
@@ -347,8 +348,7 @@ pub const WriteAheadLog = struct {
                 payload,
             ) catch |err| {
                 // Truncate any partial write to prevent torn records (SEC-0030).
-                self.file.seekTo(pre_write_pos) catch {};
-                std.posix.ftruncate(self.file.handle, pre_write_pos) catch {};
+                self.file.setLength(std.Io.Threaded.global_single_threaded.io(), pre_write_pos) catch {};
                 return err;
             };
             self.file_end += bytes_written;
@@ -356,8 +356,7 @@ pub const WriteAheadLog = struct {
         } else {
             // Plaintext path.
             const bytes_written = record.writeToFile(self.allocator, self.file, lsn, payload) catch |err| {
-                self.file.seekTo(pre_write_pos) catch {};
-                std.posix.ftruncate(self.file.handle, pre_write_pos) catch {};
+                self.file.setLength(std.Io.Threaded.global_single_threaded.io(), pre_write_pos) catch {};
                 return err;
             };
             self.file_end += bytes_written;
@@ -572,10 +571,9 @@ pub const WriteAheadLog = struct {
         // Record file position before write so we can truncate on error (SEC-0030).
         const pre_write_pos = self.file_end;
 
-        self.file.writeAll(buf[0..total_size]) catch |err| {
+        self.file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), buf[0..total_size]) catch |err| {
             // Truncate any partial write to prevent torn records (SEC-0030).
-            self.file.seekTo(pre_write_pos) catch {};
-            std.posix.ftruncate(self.file.handle, pre_write_pos) catch {};
+            self.file.setLength(std.Io.Threaded.global_single_threaded.io(), pre_write_pos) catch {};
             return err;
         };
 
@@ -629,7 +627,7 @@ pub const WriteAheadLog = struct {
 
         // Close the current file handle — compaction will rename a new file
         // over it and we must not hold a stale handle afterward.
-        self.file.close();
+        self.file.close(std.Io.Threaded.global_single_threaded.io());
 
         // Run the atomic rewrite.  On error, attempt to reopen the original
         // file so the WAL remains usable.
@@ -669,17 +667,12 @@ pub const WriteAheadLog = struct {
     /// double-close that would trigger EBADF → `unreachable` in
     /// ReleaseFast/ReleaseSmall builds (CWE-675).
     fn reopenOrPoison(self: *WriteAheadLog) void {
-        self.file = self.dir.openFile(self.filename, .{ .mode = .read_write }) catch {
+        self.file = self.dir.openFile(std.Io.Threaded.global_single_threaded.io(), self.filename, .{ .mode = .read_write }) catch {
             // openFile failed — self.file still holds the stale (closed) fd.
             self.poisoned = true;
             return;
         };
-        self.file.seekFromEnd(0) catch {
-            // seekFromEnd failed — self.file holds a valid fd that we must
-            // close now so the poisoned invariant (stale fd) holds.
-            self.file.close();
-            self.poisoned = true;
-        };
+        // No seek needed — 0.16 uses positional I/O with self.file_end tracking.
     }
 
     /// Remove all records with LSN > `after_lsn` by truncating the WAL tail.
@@ -700,14 +693,14 @@ pub const WriteAheadLog = struct {
 
         // Scan forward from byte 0 to find the end position of the last
         // record with LSN <= after_lsn.
-        try self.file.seekTo(0);
+        const io = std.Io.Threaded.global_single_threaded.io();
 
         var valid_end: u64 = 0;
         var last_lsn: u64 = 0;
         var header_buf: [record.HEADER_SIZE]u8 = undefined;
 
         while (true) {
-            const bytes_read = self.file.readAll(&header_buf) catch break;
+            const bytes_read = self.file.readPositionalAll(io, &header_buf, valid_end) catch break;
             if (bytes_read < record.HEADER_SIZE) break;
 
             const lsn = std.mem.readInt(u64, header_buf[0..8], .little);
@@ -719,9 +712,6 @@ pub const WriteAheadLog = struct {
             const record_size = record.HEADER_SIZE + payload_len + record.CRC_SIZE;
             const record_end = valid_end + record_size;
 
-            // Skip past payload + CRC to verify record exists.
-            self.file.seekBy(@intCast(payload_len + record.CRC_SIZE)) catch break;
-
             if (lsn > after_lsn) {
                 // This record should be truncated. Stop here.
                 break;
@@ -732,11 +722,9 @@ pub const WriteAheadLog = struct {
         }
 
         // Truncate the file.
-        try self.file.setEndPos(valid_end);
-        try std.posix.fdatasync(self.file.handle);
+        try self.file.setLength(io, valid_end);
+        try self.file.sync(io);
 
-        // Reposition for future appends.
-        try self.file.seekTo(valid_end);
         self.file_end = valid_end;
         self.current_lsn = last_lsn;
         self.bytes_since_compact = valid_end;
@@ -782,7 +770,7 @@ pub const WriteAheadLog = struct {
         self.mu.lockSharedUncancelable(std.Io.Threaded.global_single_threaded.io());
         const enc_key = if (self.options.encryption_key) |k| k else null;
         self.mu.unlockShared(std.Io.Threaded.global_single_threaded.io());
-        const read_file = try self.dir.openFile(self.filename, .{ .mode = .read_only });
+        const read_file = try self.dir.openFile(std.Io.Threaded.global_single_threaded.io(), self.filename, .{ .mode = .read_only });
         return Iterator.init(
             self.allocator,
             read_file,
@@ -1068,7 +1056,7 @@ test "encrypted: append and iterate with encryption" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
         .encryption_key = key,
@@ -1107,7 +1095,7 @@ test "encrypted: recovery after close and reopen" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     // Write records with encryption, then close.
     {
@@ -1157,7 +1145,7 @@ test "encrypted: appendBatch with encryption" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
         .encryption_key = key,
@@ -1192,7 +1180,7 @@ test "encrypted: iterator from_lsn skips earlier encrypted records" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
         .encryption_key = key,
@@ -1230,7 +1218,7 @@ test "deinit: encryption key zeroized after close (SEC-0002)" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     var wal_inst = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
         .encryption_key = key,
@@ -1252,7 +1240,7 @@ test "iterator deinit: encryption key zeroized (SEC-0002)" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     var wal_inst = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{
         .encryption_key = key,
@@ -1277,22 +1265,22 @@ test "init: tightens permissions on existing files to 0o600 (SEC-0021)" {
     defer tmp.cleanup();
 
     // Create a file with world-readable permissions (simulating pre-SEC-0015 file).
-    const f = try tmp.dir.createFile("wal.log", .{ .read = true, .mode = 0o644 });
-    f.close();
+    const f = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true, .permissions = std.Io.File.Permissions.fromMode(0o644) });
+    f.close(std.Io.Threaded.global_single_threaded.io());
 
     // Verify file is world-readable.
-    const stat_before = try tmp.dir.statFile("wal.log");
+    const stat_before = try tmp.dir.statFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{});
     // Check group-read bit (0o040) — should be set for 0o644.
-    try std.testing.expect(stat_before.mode & 0o040 != 0);
+    try std.testing.expect(stat_before.permissions.toMode() & 0o040 != 0);
 
     // Open via WAL init — should tighten to 0o600.
     var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{});
     defer wal.deinit();
 
     // Verify permissions were tightened.
-    const stat_after = try tmp.dir.statFile("wal.log");
+    const stat_after = try tmp.dir.statFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{});
     // group-read and other-read bits should be cleared.
-    try std.testing.expectEqual(@as(u32, 0), stat_after.mode & 0o077);
+    try std.testing.expectEqual(@as(u32, 0), stat_after.permissions.toMode() & 0o077);
 }
 
 test "sync_every_n: counter increments and resets (QA-0021)" {
@@ -1434,7 +1422,7 @@ test "checkpoint: incremental recovery after append without clean shutdown (PERF
         _ = try wal.append("three");
         _ = try wal.append("four");
         // Skip deinit — simulate crash. Manually close the file to avoid leak.
-        wal.file.close();
+        wal.file.close(std.Io.Threaded.global_single_threaded.io());
         allocator.free(wal.filename);
     }
 

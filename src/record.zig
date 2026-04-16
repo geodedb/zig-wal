@@ -181,13 +181,13 @@ pub fn writeToFile(
         var stack_buf: [HEADER_SIZE + STACK_WRITE_THRESHOLD + CRC_SIZE]u8 = undefined;
         const record_slice = stack_buf[0..total_len];
         serializeInto(record_slice, lsn, payload);
-        try file.writeAll(record_slice);
+        try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), record_slice);
     } else {
         // Heap allocation for payloads > 64 KB.
         const heap_buf = try allocator.alloc(u8, total_len);
         defer allocator.free(heap_buf);
         serializeInto(heap_buf, lsn, payload);
-        try file.writeAll(heap_buf);
+        try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), heap_buf);
     }
 
     return total_len;
@@ -219,14 +219,14 @@ pub fn readPayloadAndVerify(
     const payload = try allocator.alloc(u8, payload_len);
     errdefer allocator.free(payload);
 
-    const pn = try source.readAll(payload);
+    const pn = try source.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), payload, 0);
     if (pn < payload_len) {
         allocator.free(payload);
         return null; // torn write
     }
 
     var crc_buf: [CRC_SIZE]u8 = undefined;
-    const cn = try source.readAll(&crc_buf);
+    const cn = try source.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &crc_buf, 0);
     if (cn < CRC_SIZE) {
         allocator.free(payload);
         return null; // torn write
@@ -258,7 +258,7 @@ pub fn readPayloadAndVerify(
 /// Returns `null` on EOF or short read.
 pub fn readHeaderRaw(source: anytype) !?struct { info: HeaderInfo, raw: [HEADER_SIZE]u8 } {
     var buf: [HEADER_SIZE]u8 = undefined;
-    const n = try source.readAll(&buf);
+    const n = try source.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &buf, 0);
     if (n < HEADER_SIZE) return null;
 
     return .{
@@ -403,16 +403,16 @@ test "writeToFile: heap fallback for payloads above STACK_WRITE_THRESHOLD" {
     const lsn: u64 = 99;
 
     // Write the record to a file.
-    const wf = try tmp.dir.createFile("heap_fallback.wal", .{ .truncate = true });
+    const wf = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "heap_fallback.wal", .{ .truncate = true });
     const bytes_written = try writeToFile(allocator, wf, lsn, large_payload);
-    wf.close();
+    wf.close(std.Io.Threaded.global_single_threaded.io());
 
     // Verify reported size matches expected total.
     try std.testing.expectEqual(HEADER_SIZE + payload_size + CRC_SIZE, bytes_written);
 
     // Reopen read-only and read back via readHeaderRaw + readPayloadAndVerify.
-    const rf = try tmp.dir.openFile("heap_fallback.wal", .{ .mode = .read_only });
-    defer rf.close();
+    const rf = try tmp.dir.openFile(std.Io.Threaded.global_single_threaded.io(), "heap_fallback.wal", .{ .mode = .read_only });
+    defer rf.close(std.Io.Threaded.global_single_threaded.io());
 
     const hdr = (try readHeaderRaw(rf)) orelse return error.Unexpected;
     try std.testing.expectEqual(lsn, hdr.info.lsn);

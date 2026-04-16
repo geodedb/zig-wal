@@ -104,11 +104,11 @@ pub fn recoverFromWithKey(
     key: ?*const [32]u8,
 ) !RecoveryInfo {
     // Verify the file is at least as large as the checkpoint claims.
-    const stat = try file.stat();
+    const stat = try file.stat(std.Io.Threaded.global_single_threaded.io());
     if (stat.size < start.valid_end) return error.CheckpointStale;
 
     // Seek to the checkpoint position and scan forward.
-    try file.seekTo(start.valid_end);
+    // seekTo removed in 0.16 — using positional I/O
 
     // Seed the scan state from the checkpoint.
     // If the checkpoint has a non-zero last_lsn, ensure record_count > 0
@@ -129,7 +129,7 @@ pub fn recoverFromWithKey(
 
     while (true) {
         var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
-        const peek_n = try file.readAll(&peek_buf);
+        const peek_n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
         if (peek_n < encryption.DETECT_PEEK_SIZE) break;
 
         if (key != null and encryption.isEncrypted(&peek_buf)) {
@@ -154,13 +154,13 @@ pub fn recoverFromWithKey(
             if (tail_len <= STACK_READ_THRESHOLD + record.CRC_SIZE) {
                 var stack_buf: [STACK_READ_THRESHOLD + record.CRC_SIZE]u8 = undefined;
                 const tail = stack_buf[0..tail_len];
-                const n = try file.readAll(tail);
+                const n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), tail, 0);
                 if (n < tail_len) break;
                 if (!record.verifyCrc(header_buf, tail[0..payload_len], tail[payload_len..])) break;
             } else {
                 const heap_buf = try allocator.alloc(u8, tail_len);
                 defer allocator.free(heap_buf);
-                const n = try file.readAll(heap_buf);
+                const n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), heap_buf, 0);
                 if (n < tail_len) break;
                 if (!record.verifyCrc(header_buf, heap_buf[0..payload_len], heap_buf[payload_len..])) break;
             }
@@ -172,7 +172,7 @@ pub fn recoverFromWithKey(
         }
     }
 
-    try file.seekTo(info.valid_end);
+    // seekTo removed in 0.16 — using positional I/O
     return info;
 }
 
@@ -191,7 +191,7 @@ pub fn recoverWithKey(
     key: ?*const [32]u8,
 ) !RecoveryInfo {
     // Seek to the beginning of the file before scanning.
-    try file.seekTo(0);
+    // seekTo removed in 0.16 — using positional I/O
 
     var info = RecoveryInfo{
         .last_lsn = 0,
@@ -212,7 +212,7 @@ pub fn recoverWithKey(
         // Read DETECT_PEEK_SIZE bytes (blob_len + magic) to decide which
         // parsing path to take (QA-0014).
         var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
-        const peek_n = try file.readAll(&peek_buf);
+        const peek_n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, 0);
         if (peek_n < encryption.DETECT_PEEK_SIZE) {
             // EOF or torn write — stop scanning.
             break;
@@ -259,7 +259,7 @@ pub fn recoverWithKey(
                 var stack_buf: [STACK_READ_THRESHOLD + record.CRC_SIZE]u8 = undefined;
                 const tail = stack_buf[0..tail_len];
 
-                const n = try file.readAll(tail);
+                const n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), tail, 0);
                 if (n < tail_len) break;
 
                 if (!record.verifyCrc(header_buf, tail[0..payload_len], tail[payload_len..])) break;
@@ -267,7 +267,7 @@ pub fn recoverWithKey(
                 const heap_buf = try allocator.alloc(u8, tail_len);
                 defer allocator.free(heap_buf);
 
-                const n = try file.readAll(heap_buf);
+                const n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), heap_buf, 0);
                 if (n < tail_len) break;
 
                 const payload_slice = heap_buf[0..payload_len];
@@ -285,7 +285,7 @@ pub fn recoverWithKey(
 
     // Explicitly position file at valid_end so callers can rely on the
     // documented guarantee without depending on scan-loop internals (QA-0027).
-    try file.seekTo(info.valid_end);
+    // seekTo removed in 0.16 — using positional I/O
 
     return info;
 }
@@ -302,8 +302,8 @@ test "recover: empty file returns zero state" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const info = try recover(allocator, file);
 
@@ -318,8 +318,8 @@ test "recover: single valid record" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const payload = "hello, WAL!";
     const bytes_written = try record.writeToFile(allocator, file, 1, payload);
@@ -337,8 +337,8 @@ test "recover: multiple records" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     var total_bytes: u64 = 0;
     total_bytes += try record.writeToFile(allocator, file, 1, "alpha");
@@ -358,13 +358,13 @@ test "recover: torn write — incomplete header" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     // Write one valid record, then append only 6 bytes of what would be a
     // second header (incomplete — the header is 12 bytes).
     const bytes_written = try record.writeToFile(allocator, file, 1, "good");
-    try file.writeAll(&[_]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 }); // partial header
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &[_]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 }); // partial header
 
     const info = try recover(allocator, file);
 
@@ -380,8 +380,8 @@ test "recover: torn write — valid record then incomplete payload" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     // Write one valid record.
     const bytes_written = try record.writeToFile(allocator, file, 1, "good");
@@ -391,8 +391,8 @@ test "recover: torn write — valid record then incomplete payload" {
     var torn_header: [record.HEADER_SIZE]u8 = undefined;
     std.mem.writeInt(u64, torn_header[0..8], 2, .little);
     std.mem.writeInt(u32, torn_header[8..12], 10, .little);
-    try file.writeAll(&torn_header);
-    try file.writeAll(&[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF }); // only 4 of 10 payload bytes
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &torn_header);
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF }); // only 4 of 10 payload bytes
 
     const info = try recover(allocator, file);
 
@@ -408,8 +408,8 @@ test "recover: corrupt CRC stops scan" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     // Write one valid record.
     const bytes_written = try record.writeToFile(allocator, file, 1, "good");
@@ -424,7 +424,7 @@ test "recover: corrupt CRC stops scan" {
     defer allocator.free(corrupt_buf);
     corrupt_buf[corrupt_buf.len - 1] ^= 0xFF;
 
-    try file.writeAll(corrupt_buf);
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), corrupt_buf);
 
     const info = try recover(allocator, file);
 
@@ -440,8 +440,8 @@ test "recover: non-monotonic LSN stops scan (SEC-0022)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     // Write 3 records with monotonic LSNs: 1, 2, 3.
     const first_size = try record.writeToFile(allocator, file, 1, "one");
@@ -451,18 +451,18 @@ test "recover: non-monotonic LSN stops scan (SEC-0022)" {
 
     // Overwrite the second record's LSN with 1 (non-monotonic: 1 <= 1).
     // Seek to the start of the second record and write LSN=1.
-    try file.seekTo(first_size);
+    // seekTo removed in 0.16 — using positional I/O
     var lsn_buf: [8]u8 = undefined;
     std.mem.writeInt(u64, &lsn_buf, 1, .little);
-    try file.writeAll(&lsn_buf);
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &lsn_buf);
 
     // Now rewrite the CRC of the second record so it's valid for the modified LSN.
     // Read the full modified second record, recompute CRC, and write it back.
-    try file.seekTo(first_size);
+    // seekTo removed in 0.16 — using positional I/O
     const payload_str = "two";
     const rec_size = record.HEADER_SIZE + payload_str.len + record.CRC_SIZE;
     var rec_buf: [record.HEADER_SIZE + 3 + record.CRC_SIZE]u8 = undefined;
-    const n = try file.readAll(rec_buf[0..rec_size]);
+    const n = try file.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), rec_buf[0..rec_size], 0);
     if (n < rec_size) return error.Unexpected;
 
     // Recompute CRC over header + payload.
@@ -470,8 +470,8 @@ test "recover: non-monotonic LSN stops scan (SEC-0022)" {
     std.mem.writeInt(u32, rec_buf[record.HEADER_SIZE + payload_str.len ..][0..4], crc, .little);
 
     // Write the fixed record back.
-    try file.seekTo(first_size);
-    try file.writeAll(rec_buf[0..rec_size]);
+    // seekTo removed in 0.16 — using positional I/O
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), rec_buf[0..rec_size]);
 
     // Recovery should stop at the non-monotonic record (LSN 1 <= 1).
     const info = try recover(allocator, file);
@@ -486,8 +486,8 @@ test "recover: oversized payload_len stops scan (SEC-0004/QA-0024)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     // Write one valid record.
     const bytes_written = try record.writeToFile(allocator, file, 1, "good");
@@ -499,7 +499,7 @@ test "recover: oversized payload_len stops scan (SEC-0004/QA-0024)" {
     // MAX_RECORD_SIZE = 16 * 1024 * 1024, minus HEADER_SIZE(12) minus CRC_SIZE(4) + 1
     const huge_len: u32 = @intCast(record.MAX_RECORD_SIZE - record.HEADER_SIZE - record.CRC_SIZE + 1);
     std.mem.writeInt(u32, bad_header[8..12], huge_len, .little);
-    try file.writeAll(&bad_header);
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &bad_header);
 
     const info = try recover(allocator, file);
 
@@ -522,8 +522,8 @@ test "recoverWithKey: empty file returns zero state (QA-0018)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const key = test_key;
     const info = try recoverWithKey(allocator, file, &key);
@@ -539,8 +539,8 @@ test "recoverWithKey: single encrypted record (QA-0018)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const key = test_key;
     const bytes_written = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "hello encrypted");
@@ -558,8 +558,8 @@ test "recoverWithKey: multiple encrypted records (QA-0018)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const key = test_key;
     var total_bytes: u64 = 0;
@@ -580,14 +580,14 @@ test "recoverWithKey: torn write — incomplete header (QA-0018)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const key = test_key;
     // Write one valid encrypted record, then append only 6 bytes of what
     // would be a second record (incomplete — the peek/header is 12 bytes).
     const bytes_written = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "good");
-    try file.writeAll(&[_]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 }); // partial header
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &[_]u8{ 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 }); // partial header
 
     const info = try recoverWithKey(allocator, file, &key);
 
@@ -603,8 +603,8 @@ test "recoverWithKey: torn write — valid record then incomplete payload (QA-00
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const key = test_key;
     // Write one valid encrypted record.
@@ -617,9 +617,9 @@ test "recoverWithKey: torn write — valid record then incomplete payload (QA-00
     std.mem.writeInt(u32, torn_header[0..4], 100, .little);
     // Write the encryption magic so it's recognised as an encrypted record.
     @memcpy(torn_header[4..12], &encryption.MAGIC);
-    try file.writeAll(&torn_header);
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &torn_header);
     // Only 4 bytes of the remaining 100 — torn write.
-    try file.writeAll(&[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF });
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF });
 
     const info = try recoverWithKey(allocator, file, &key);
 
@@ -635,8 +635,8 @@ test "recoverWithKey: decryption failure stops scan (QA-0018)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const key = test_key;
     // Write one valid encrypted record.
@@ -654,7 +654,7 @@ test "recoverWithKey: decryption failure stops scan (QA-0018)" {
     // Set valid blob_len and magic so isEncrypted returns true.
     std.mem.writeInt(u32, garbage[0..4], garbage_blob_len, .little);
     @memcpy(garbage[4..12], &encryption.MAGIC);
-    try file.writeAll(&garbage);
+    try file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), &garbage);
 
     const info = try recoverWithKey(allocator, file, &key);
 
@@ -670,8 +670,8 @@ test "recoverWithKey: non-monotonic LSN stops scan (SEC-0022, QA-0018)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const key = test_key;
     // Write two encrypted records with monotonic LSNs: 1, 2.
@@ -698,8 +698,8 @@ test "recoverWithKey: plaintext records rejected when key is present (SEC-0038)"
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     // Write plaintext records (no encryption).
     _ = try record.writeToFile(allocator, file, 1, "plain-1");
@@ -720,8 +720,8 @@ test "recoverWithKey: encrypted then plaintext stops at boundary (SEC-0038)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const key = test_key;
 
@@ -749,8 +749,8 @@ test "recoverFrom: exact checkpoint — no additional records" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     _ = try record.writeToFile(allocator, file, 1, "one");
     _ = try record.writeToFile(allocator, file, 2, "two");
@@ -771,8 +771,8 @@ test "recoverFrom: picks up new records after checkpoint" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     _ = try record.writeToFile(allocator, file, 1, "one");
     _ = try record.writeToFile(allocator, file, 2, "two");
@@ -781,7 +781,7 @@ test "recoverFrom: picks up new records after checkpoint" {
     const ckpt = try recover(allocator, file);
 
     // Seek to end and write 2 more records.
-    try file.seekTo(ckpt.valid_end);
+    // seekTo removed in 0.16 — using positional I/O
     _ = try record.writeToFile(allocator, file, 3, "three");
     _ = try record.writeToFile(allocator, file, 4, "four");
 
@@ -797,8 +797,8 @@ test "recoverFrom: stale checkpoint returns error" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     _ = try record.writeToFile(allocator, file, 1, "one");
 
@@ -819,8 +819,8 @@ test "recoverFromWithKey: incremental encrypted recovery (PERF-0013)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     const key = test_key;
     _ = try encryption.encryptAndWriteToFile(allocator, file, &key, 1, "enc-one");
@@ -830,7 +830,7 @@ test "recoverFromWithKey: incremental encrypted recovery (PERF-0013)" {
     const ckpt = try recoverWithKey(allocator, file, &key);
 
     // Write 1 more encrypted record.
-    try file.seekTo(ckpt.valid_end);
+    // seekTo removed in 0.16 — using positional I/O
     _ = try encryption.encryptAndWriteToFile(allocator, file, &key, 3, "enc-three");
 
     // Incremental recovery should find the new record.
@@ -845,8 +845,8 @@ test "recoverFrom: rejects non-monotonic LSN at checkpoint boundary (SEC NEW-1)"
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("wal.log", .{ .read = true });
-    defer file.close();
+    const file = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true });
+    defer file.close(std.Io.Threaded.global_single_threaded.io());
 
     // Write 3 records: LSNs 1, 2, 3.
     _ = try record.writeToFile(allocator, file, 1, "one");
@@ -857,7 +857,7 @@ test "recoverFrom: rejects non-monotonic LSN at checkpoint boundary (SEC NEW-1)"
     // original bug where deinit always wrote record_count=0).
     const ckpt = RecoveryInfo{
         .last_lsn = 3,
-        .valid_end = try file.getPos(),
+        .valid_end = try file.length(std.Io.Threaded.global_single_threaded.io()),
         .record_count = 0,
     };
 
