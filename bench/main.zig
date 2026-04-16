@@ -16,6 +16,53 @@ const wal = @import("wal");
 const record = wal.record;
 const encryption = wal.encryption;
 
+// Zig 0.16 compat: Timer was removed; use monotonic clock directly.
+const Timer = struct {
+    start_ns: i96,
+
+    fn start() error{}!Timer {
+        return .{ .start_ns = nanoTimestamp() };
+    }
+
+    fn read(self: *Timer) u64 {
+        const diff = nanoTimestamp() - self.start_ns;
+        return if (diff > 0) @intCast(diff) else 0;
+    }
+
+    fn nanoTimestamp() i96 {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        return std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds;
+    }
+};
+
+// Zig 0.16 compat: std.testing.tmpDir asserts builtin.is_test.
+const BenchTmpDir = struct {
+    dir: std.Io.Dir,
+    parent: std.Io.Dir,
+    sub_path: [12]u8,
+
+    fn create() BenchTmpDir {
+        const sio = std.Io.Threaded.global_single_threaded.io();
+        const cwd = std.Io.Dir.cwd();
+        var cache_dir = cwd.createDirPathOpen(sio, ".zig-cache/tmp", .{}) catch
+            @panic("bench: cannot create .zig-cache/tmp");
+        var sub: [12]u8 = undefined;
+        var rng_bytes: [9]u8 = undefined;
+        sio.random(&rng_bytes);
+        _ = std.base64.url_safe.Encoder.encode(&sub, &rng_bytes);
+        const dir = cache_dir.createDirPathOpen(sio, &sub, .{}) catch
+            @panic("bench: cannot create tmp subdir");
+        return .{ .dir = dir, .parent = cache_dir, .sub_path = sub };
+    }
+
+    fn cleanup(self: *BenchTmpDir) void {
+        const sio = std.Io.Threaded.global_single_threaded.io();
+        self.dir.close(sio);
+        self.parent.deleteTree(sio, &self.sub_path) catch {};
+        self.parent.close(sio);
+    }
+};
+
 const WARM_UP = 50;
 
 /// Benchmark configuration.
@@ -57,12 +104,12 @@ fn makeKey() [32]u8 {
 pub fn main() !void {
     // Use GeneralPurposeAllocator for realistic allocation overhead (QA-0012).
     // page_allocator calls mmap/munmap per alloc, masking true WAL throughput.
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     var buf: [4096]u8 = undefined;
-    var file_writer = std.fs.File.stdout().writer(&buf);
+    var file_writer = std.Io.File.stdout().writer(std.Io.Threaded.global_single_threaded.io(), &buf);
     const w = &file_writer.interface;
 
     try w.print("\n{s:<30} {s:>12} {s:>12} {s:>14}\n", .{
@@ -91,7 +138,7 @@ pub fn main() !void {
 }
 
 fn runAppendBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench) !void {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = BenchTmpDir.create();
     defer tmp.cleanup();
 
     const payload = try allocator.alloc(u8, bench.payload_size);
@@ -117,7 +164,7 @@ fn runAppendBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench)
     var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "bench.wal", opts);
     defer log.deinit();
 
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     for (0..bench.record_count) |_| {
         _ = try log.append(payload);
     }
@@ -131,7 +178,7 @@ fn runAppendBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench)
 }
 
 fn runRecoveryBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench) !void {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = BenchTmpDir.create();
     defer tmp.cleanup();
 
     const payload = try allocator.alloc(u8, bench.payload_size);
@@ -154,7 +201,7 @@ fn runRecoveryBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Benc
     }
 
     // Benchmark recovery (re-open).
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     {
         var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "bench.wal", opts);
         defer log.deinit();
@@ -169,7 +216,7 @@ fn runRecoveryBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Benc
 }
 
 fn runCompactBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench) !void {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = BenchTmpDir.create();
     defer tmp.cleanup();
 
     const payload = try allocator.alloc(u8, bench.payload_size);
@@ -193,7 +240,7 @@ fn runCompactBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench
     const watermark = bench.record_count / 2;
     const records_kept = bench.record_count - watermark;
 
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     try log.compact(@intCast(watermark));
     const elapsed_ns = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
@@ -208,7 +255,7 @@ fn runCompactBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench
 /// Iteration throughput — measures full forward scan of WAL records (PERF-0015).
 /// "iterate_lsn_*" variants use from_lsn = record_count / 2 to measure skip performance.
 fn runIterateBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench) !void {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = BenchTmpDir.create();
     defer tmp.cleanup();
 
     const payload = try allocator.alloc(u8, bench.payload_size);
@@ -239,7 +286,7 @@ fn runIterateBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench
     var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "bench.wal", opts);
     defer log.deinit();
 
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     var iter = try log.iterator(from_lsn);
     defer iter.deinit();
     var count: usize = 0;
@@ -280,7 +327,7 @@ fn runEncryptBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench
         enc.encryptInto(reuse_buf, key, plaintext);
     }
 
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     for (0..bench.record_count) |_| {
         enc.encryptInto(reuse_buf, key, plaintext);
     }
@@ -321,7 +368,7 @@ fn runDecryptBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench
         _ = try enc.decryptRecordInPlace(key, reuse_buf);
     }
 
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     for (0..bench.record_count) |_| {
         @memcpy(reuse_buf, template);
         _ = try enc.decryptRecordInPlace(key, reuse_buf);

@@ -23,6 +23,54 @@ const Options = wal_mod.Options;
 const record = wal_mod.record;
 const encryption = wal_mod.encryption;
 
+// Zig 0.16 compat: Timer was removed; use monotonic clock directly.
+const Timer = struct {
+    start_ns: i96,
+
+    fn start() error{}!Timer {
+        return .{ .start_ns = nanoTimestamp() };
+    }
+
+    fn read(self: *Timer) u64 {
+        const diff = nanoTimestamp() - self.start_ns;
+        return if (diff > 0) @intCast(diff) else 0;
+    }
+
+    fn nanoTimestamp() i96 {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        return std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds;
+    }
+};
+
+// Zig 0.16 compat: std.testing.tmpDir asserts builtin.is_test.
+// Lightweight replacement for bench executables.
+const BenchTmpDir = struct {
+    dir: std.Io.Dir,
+    parent: std.Io.Dir,
+    sub_path: [12]u8,
+
+    fn create() BenchTmpDir {
+        const sio = std.Io.Threaded.global_single_threaded.io();
+        const cwd = std.Io.Dir.cwd();
+        var cache_dir = cwd.createDirPathOpen(sio, ".zig-cache/tmp", .{}) catch
+            @panic("bench: cannot create .zig-cache/tmp");
+        var sub: [12]u8 = undefined;
+        var rng_bytes: [9]u8 = undefined;
+        sio.random(&rng_bytes);
+        _ = std.base64.url_safe.Encoder.encode(&sub, &rng_bytes);
+        const dir = cache_dir.createDirPathOpen(sio, &sub, .{}) catch
+            @panic("bench: cannot create tmp subdir");
+        return .{ .dir = dir, .parent = cache_dir, .sub_path = sub };
+    }
+
+    fn cleanup(self: *BenchTmpDir) void {
+        const sio = std.Io.Threaded.global_single_threaded.io();
+        self.dir.close(sio);
+        self.parent.deleteTree(sio, &self.sub_path) catch {};
+        self.parent.close(sio);
+    }
+};
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -102,7 +150,7 @@ fn nsToMs(ns: u64) f64 {
 // ============================================================================
 
 fn benchAppend(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = BenchTmpDir.create();
     defer tmp.cleanup();
 
     const payload = try makePayload(allocator, tier.payload_size);
@@ -114,12 +162,12 @@ fn benchAppend(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
         defer log.deinit();
         for (0..WARM_UP) |_| _ = try log.append(payload);
     }
-    tmp.dir.deleteFile("warmup.wal") catch {};
+    tmp.dir.deleteFile(std.Io.Threaded.global_single_threaded.io(), "warmup.wal") catch {};
 
     var log = try WriteAheadLog.init(allocator, tmp.dir, "bench.wal", opts);
     defer log.deinit();
 
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     for (0..tier.record_count) |_| {
         _ = try log.append(payload);
     }
@@ -127,7 +175,7 @@ fn benchAppend(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
 }
 
 fn benchBatch(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = BenchTmpDir.create();
     defer tmp.cleanup();
 
     const payload = try makePayload(allocator, tier.payload_size);
@@ -142,7 +190,7 @@ fn benchBatch(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
     defer log.deinit();
 
     const num_batches = tier.record_count / tier.batch_size;
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     for (0..num_batches) |_| {
         _ = try log.appendBatch(batch);
     }
@@ -150,7 +198,7 @@ fn benchBatch(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
 }
 
 fn benchBatchParallel(allocator: std.mem.Allocator, tier: Tier, pool: *tp.ThreadPool) !f64 {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = BenchTmpDir.create();
     defer tmp.cleanup();
 
     const payload = try makePayload(allocator, tier.payload_size);
@@ -169,7 +217,7 @@ fn benchBatchParallel(allocator: std.mem.Allocator, tier: Tier, pool: *tp.Thread
     defer log.deinit();
 
     const num_batches = tier.record_count / tier.batch_size;
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     for (0..num_batches) |_| {
         _ = try log.appendBatch(batch);
     }
@@ -177,7 +225,7 @@ fn benchBatchParallel(allocator: std.mem.Allocator, tier: Tier, pool: *tp.Thread
 }
 
 fn benchRecovery(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = BenchTmpDir.create();
     defer tmp.cleanup();
 
     const payload = try makePayload(allocator, tier.payload_size);
@@ -192,7 +240,7 @@ fn benchRecovery(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
     }
 
     // Benchmark recovery (re-open).
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     {
         var log = try WriteAheadLog.init(allocator, tmp.dir, "bench.wal", opts);
         defer log.deinit();
@@ -201,7 +249,7 @@ fn benchRecovery(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
 }
 
 fn benchCompact(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = BenchTmpDir.create();
     defer tmp.cleanup();
 
     const payload = try makePayload(allocator, tier.payload_size);
@@ -215,13 +263,13 @@ fn benchCompact(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
 
     // Compact half.
     const watermark = tier.record_count / 2;
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     try log.compact(@intCast(watermark));
     return nsToMs(timer.read());
 }
 
 fn benchIterate(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = BenchTmpDir.create();
     defer tmp.cleanup();
 
     const payload = try makePayload(allocator, tier.payload_size);
@@ -238,7 +286,7 @@ fn benchIterate(allocator: std.mem.Allocator, tier: Tier, opts: Options) !f64 {
     var log = try WriteAheadLog.init(allocator, tmp.dir, "bench.wal", opts);
     defer log.deinit();
 
-    var timer = try std.time.Timer.start();
+    var timer = try Timer.start();
     var iter = try log.iterator(0);
     defer iter.deinit();
     var count: usize = 0;
@@ -280,12 +328,13 @@ fn runTier(allocator: std.mem.Allocator, tier: Tier, pool: *tp.ThreadPool) !Tier
 // ============================================================================
 
 fn writeJsonOutput(results: []const TierResult) !void {
+    const sio = std.Io.Threaded.global_single_threaded.io();
     var buf: [8192]u8 = undefined;
-    var w = std.fs.File.stdout().writer(&buf);
+    var w = std.Io.File.stdout().writer(sio, &buf);
     const out = &w.interface;
 
     // Timestamp
-    const ts = std.time.timestamp();
+    const ts = @divTrunc(Timer.nanoTimestamp(), std.time.ns_per_s);
     const epoch = std.time.epoch.EpochSeconds{ .secs = @intCast(ts) };
     const day = epoch.getEpochDay();
     const yd = day.calculateYearDay();
@@ -383,24 +432,23 @@ fn writeSummary(results: []const TierResult) void {
 // Main
 // ============================================================================
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init.Minimal) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     // Parse optional max-tier argument.
     var max_tier: []const u8 = "100K";
-    var args = std.process.args();
-    _ = args.next(); // program name
-    if (args.next()) |arg| {
-        max_tier = arg;
+    const argv = try init.args.toSlice(allocator);
+    if (argv.len > 1) {
+        max_tier = argv[1];
     }
 
     // Start thread pool for parallel benchmarks.
     var pool = try tp.ThreadPool.init(allocator, .{});
     defer pool.deinit();
 
-    var results = std.ArrayListUnmanaged(TierResult){};
+    var results: std.ArrayListUnmanaged(TierResult) = .empty;
     defer results.deinit(allocator);
 
     for (tiers) |tier| {

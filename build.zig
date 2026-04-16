@@ -100,6 +100,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("bench/main.zig"),
             .target = target,
             .optimize = .ReleaseFast,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "wal", .module = module },
             },
@@ -116,6 +117,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("bench/scale_bench.zig"),
             .target = target,
             .optimize = .ReleaseFast,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "wal", .module = module },
                 .{ .name = "thread_pool", .module = tp_module },
@@ -164,6 +166,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("examples/basic.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "wal", .module = module },
             },

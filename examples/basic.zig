@@ -13,12 +13,12 @@ const std = @import("std");
 const wal = @import("wal");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     // Open (or create) a WAL in the current working directory.
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
     var log = try wal.WriteAheadLog.init(allocator, cwd, "demo.wal", .{});
 
     // Append some records.
