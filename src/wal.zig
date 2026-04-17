@@ -72,6 +72,13 @@ pub const Options = struct {
     /// The thread pool is **not owned** by the WAL — the caller must manage
     /// its lifecycle (init/deinit). When `null` (the default), all
     /// serialization runs sequentially on the calling thread.
+    ///
+    /// For best throughput on long-running writer loops, wrap the loop in
+    /// `registerWriterThread` / `releaseWriterThread` — this opts the
+    /// writer thread into the pool's per-submitter fast path and bypasses
+    /// global-freelist CAS on descriptor allocation. Note: the pool must
+    /// be constructed with `max_submitter_queues >= 1` (the library's
+    /// default of 0 disables registerSubmitter entirely).
     thread_pool: ?*tp.ThreadPool = null,
 };
 
