@@ -159,7 +159,7 @@ fn runAppendBench(allocator: std.mem.Allocator, w: *std.Io.Writer, bench: Bench)
             _ = try warmup_log.append(payload);
         }
     }
-    tmp.dir.deleteFile("warmup.wal") catch {};
+    tmp.dir.deleteFile(std.Io.Threaded.global_single_threaded.io(), "warmup.wal") catch {};
 
     var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "bench.wal", opts);
     defer log.deinit();

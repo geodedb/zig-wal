@@ -47,6 +47,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/integration.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "wal", .module = module },
             },
@@ -68,6 +69,7 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path(scenario_path),
                 .target = target,
                 .optimize = optimize,
+                .link_libc = true,
                 .imports = &.{
                     .{ .name = "wal", .module = module },
                 },

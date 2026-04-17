@@ -17,7 +17,7 @@ test "encryption: full lifecycle with encryption" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     // Write 3 records with encryption and close.
     {
@@ -64,7 +64,7 @@ test "encryption: data not readable as plaintext" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     const secret = "my-super-secret-payload";
 
@@ -99,7 +99,7 @@ test "encryption: batch append with encryption" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
         .encryption_key = key,
@@ -133,7 +133,7 @@ test "encryption: compaction of encrypted WAL preserves kept records" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     // Create an encrypted WAL and append 5 records.
     var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
@@ -180,7 +180,7 @@ test "encryption: plaintext records rejected when reopened with key (SEC-0038)" 
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     // Phase 1: Write plaintext records (no encryption key).
     {
@@ -219,7 +219,7 @@ test "encryption: compaction rejects plaintext records with key (SEC-0038)" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     // Write only encrypted records (SEC-0038 prevents mixed-mode).
     {
@@ -264,7 +264,7 @@ test "encryption: large payload round-trip (>24B, exercises overlapping decrypt)
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     const payload_sizes = [_]usize{ 25, 64, 256, 1024, 4096 };
 
@@ -319,7 +319,7 @@ test "encryption: batch append with large payloads (SEC-0003)" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     // Payloads well above the 24-byte overlap threshold.
     const payload_64 = "A" ** 64;

@@ -188,7 +188,7 @@ test "encrypted: torn write mid-header recovery" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     // Write 3 encrypted records and close.
     {
@@ -248,7 +248,7 @@ test "encrypted: corrupt ciphertext recovery" {
     defer tmp.cleanup();
 
     var key: [32]u8 = undefined;
-    std.crypto.random.bytes(&key);
+    std.Io.Threaded.global_single_threaded.io().random(&key);
 
     // Write 3 encrypted records and close.
     {
