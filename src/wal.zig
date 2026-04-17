@@ -1937,20 +1937,41 @@ test "registerWriterThread: returns a valid slot and releases cleanly" {
     const slot = try wal.registerWriterThread();
     try std.testing.expect(slot < 64);
 
-    // A second register call on the same thread returns a different slot
-    // (each call claims fresh from the pool's bitmap, matching the
-    // raft.RaftNode.registerAsSubmitter semantics documented in e3b466a).
-    // Our pool has max_submitter_queues=1, so the second call must fail
-    // with NoSubmitterSlots — the bitmap is exhausted.
+    // With max_submitter_queues=1, a second register call exhausts the bitmap.
     try std.testing.expectError(error.NoSubmitterSlots, wal.registerWriterThread());
 
-    // Release cleanly.
     wal.releaseWriterThread(slot);
 
     // After release, a fresh register must succeed again.
     const slot2 = try wal.registerWriterThread();
     defer wal.releaseWriterThread(slot2);
     try std.testing.expect(slot2 < 64);
+}
+
+test "registerWriterThread: appendBatch works from a registered submitter" {
+    const allocator = std.testing.allocator;
+
+    var pool = try tp.ThreadPool.init(allocator, .{
+        .max_threads = 2,
+        .max_submitter_queues = 1,
+    });
+    defer pool.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "reg_append.wal", .{
+        .manual_sync = true,
+        .thread_pool = &pool,
+    });
+    defer wal.deinit();
+
+    const slot = try wal.registerWriterThread();
+    defer wal.releaseWriterThread(slot);
+
+    const payloads = [_][]const u8{ "alpha", "beta", "gamma" };
+    const last_lsn = try wal.appendBatch(&payloads);
+    try std.testing.expectEqual(@as(u64, 3), last_lsn);
 }
 
 test "registerWriterThread: returns NoThreadPool when pool not wired" {
