@@ -299,6 +299,41 @@ pub const WriteAheadLog = struct {
     }
 
     // -------------------------------------------------------------------------
+    // Thread-pool submitter registration
+    // -------------------------------------------------------------------------
+
+    /// Opt the calling thread into the thread-pool's per-submitter fast
+    /// path. WAL's writer loop is a single long-lived submitter thread
+    /// per instance; registering that thread lets `appendBatch`'s
+    /// `submitBatch` bypass global-freelist CAS on descriptor allocation.
+    ///
+    /// Call ONCE on the thread that will drive `appendBatch` before
+    /// entering the writer loop; pair with exactly one
+    /// `releaseWriterThread` on the same thread before the loop exits.
+    /// Each call claims a fresh slot, so do not call per-append — wrap
+    /// the whole writer-loop lifetime.
+    ///
+    /// Returns `error.NoSubmitterSlots` if the pool's submitter bitmap is
+    /// full OR if the pool was configured with `max_submitter_queues = 0`
+    /// (the default — callers must set it explicitly in
+    /// `tp.ThreadPool.init`'s `Config`). Returns `error.NoThreadPool`
+    /// when no pool was wired at init.
+    pub fn registerWriterThread(self: *WriteAheadLog) !usize {
+        const pool = self.options.thread_pool orelse return error.NoThreadPool;
+        return pool.registerSubmitter();
+    }
+
+    /// Release a slot previously acquired via `registerWriterThread`.
+    /// Must be called on the same thread that registered the slot for
+    /// the per-slot descriptor cache to drain correctly. Out-of-range
+    /// `idx` is silently ignored. Safe to call when `options.thread_pool`
+    /// is null (no-op).
+    pub fn releaseWriterThread(self: *WriteAheadLog, idx: usize) void {
+        const pool = self.options.thread_pool orelse return;
+        pool.releaseSubmitter(idx);
+    }
+
+    // -------------------------------------------------------------------------
     // Write path
     // -------------------------------------------------------------------------
 
@@ -1872,4 +1907,46 @@ test "appendBatchWithLsns: parallel serialization with caller LSNs (PAR-0002)" {
         count += 1;
     }
     try std.testing.expectEqual(@as(usize, 5), count);
+}
+
+test "registerWriterThread: returns a valid slot and survives appendBatch" {
+    const allocator = std.testing.allocator;
+
+    var pool = try tp.ThreadPool.init(allocator, .{
+        .max_threads = 2,
+        .max_submitter_queues = 1, // required for registerSubmitter
+    });
+    defer pool.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "reg_writer.wal", .{
+        .manual_sync = true,
+        .thread_pool = &pool,
+    });
+    defer wal.deinit();
+
+    const slot = try wal.registerWriterThread();
+    defer wal.releaseWriterThread(slot);
+
+    try std.testing.expect(slot < 64);
+
+    const payloads = [_][]const u8{ "alpha", "beta", "gamma" };
+    const last_lsn = try wal.appendBatch(&payloads);
+    try std.testing.expectEqual(@as(u64, 3), last_lsn);
+}
+
+test "registerWriterThread: returns NoThreadPool when pool not wired" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "no_pool.wal", .{});
+    defer wal.deinit();
+
+    try std.testing.expectError(error.NoThreadPool, wal.registerWriterThread());
+    // releaseWriterThread should be a safe no-op when there's no pool.
+    wal.releaseWriterThread(0);
 }
