@@ -5,6 +5,11 @@
 //! (`appendWithLsn` and `appendBatchWithLsns`).
 
 const std = @import("std");
+
+fn scenario_io() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
 const wal = @import("wal");
 
 // Internal/unstable modules used for crash scenario construction (QA-0053).
@@ -30,11 +35,11 @@ test "crash: torn write after appendWithLsn recovers previous records" {
 
     // Append 6 garbage bytes directly — simulates a torn header write.
     {
-        const f = try tmp.dir.openFile("wal", .{ .mode = .read_write });
-        defer f.close();
-        try f.seekFromEnd(0);
+        const f = try tmp.dir.openFile(scenario_io(), "wal", .{ .mode = .read_write });
+        defer f.close(scenario_io());
+        const _end_pos_f = try f.length(scenario_io());
         const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE };
-        try f.writeAll(&garbage);
+        try f.writePositionalAll(scenario_io(), &garbage, _end_pos_f);
     }
 
     // Reopen — recovery should truncate the garbage and restore LSNs 500-502.
@@ -79,19 +84,18 @@ test "crash: torn write mid-batch appendBatchWithLsns recovers before batch" {
     // Append a partial valid record header (incomplete payload) to simulate
     // a torn batch write.
     {
-        const f = try tmp.dir.openFile("wal", .{ .mode = .read_write });
-        defer f.close();
-        try f.seekFromEnd(0);
-
+        const f = try tmp.dir.openFile(scenario_io(), "wal", .{ .mode = .read_write });
+        defer f.close(scenario_io());
+        const _end_pos_f = try f.length(scenario_io());
         // Fake header: LSN=103, payload_len=1000
         var hdr: [record.HEADER_SIZE]u8 = undefined;
         std.mem.writeInt(u64, hdr[0..8], 103, .little);
         std.mem.writeInt(u32, hdr[8..12], 1000, .little);
-        try f.writeAll(&hdr);
+        try f.writePositionalAll(scenario_io(), &hdr, _end_pos_f);
 
         // Only 10 bytes of payload (instead of 1000).
         const partial = [_]u8{0xFF} ** 10;
-        try f.writeAll(&partial);
+        try f.writePositionalAll(scenario_io(), &partial, _end_pos_f + hdr.len);
     }
 
     // Reopen — should recover only LSNs 100-102.
@@ -142,11 +146,11 @@ test "crash: recovery with non-sequential LSNs after compaction" {
 
     // Append garbage to the WAL file to simulate crash.
     {
-        const f = try tmp.dir.openFile("wal", .{ .mode = .read_write });
-        defer f.close();
-        try f.seekFromEnd(0);
+        const f = try tmp.dir.openFile(scenario_io(), "wal", .{ .mode = .read_write });
+        defer f.close(scenario_io());
+        const _end_pos_f = try f.length(scenario_io());
         const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE };
-        try f.writeAll(&garbage);
+        try f.writePositionalAll(scenario_io(), &garbage, _end_pos_f);
     }
 
     // Reopen — should recover LSNs 1005-1009.

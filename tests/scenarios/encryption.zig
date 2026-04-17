@@ -5,6 +5,11 @@
 //! opacity, and batch behaviour under encryption.
 
 const std = @import("std");
+
+fn scenario_io() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
+
 const wal = @import("wal");
 
 // ============================================================================
@@ -78,14 +83,14 @@ test "encryption: data not readable as plaintext" {
     }
 
     // Read the raw file bytes and verify the secret string does NOT appear.
-    const stat = try tmp.dir.statFile("wal");
+    const stat = try tmp.dir.statFile(scenario_io(), "wal", .{});
     const raw = try allocator.alloc(u8, stat.size);
     defer allocator.free(raw);
 
     {
-        const f = try tmp.dir.openFile("wal", .{});
-        defer f.close();
-        _ = try f.readAll(raw);
+        const f = try tmp.dir.openFile(scenario_io(), "wal", .{});
+        defer f.close(scenario_io());
+        _ = try f.readPositionalAll(scenario_io(), raw, 0);
     }
 
     // The plaintext secret must not appear in the ciphertext.
@@ -271,7 +276,7 @@ test "encryption: large payload round-trip (>24B, exercises overlapping decrypt)
     for (payload_sizes) |size| {
         // Create a fresh WAL for each payload size.
         const fname = "wal-large";
-        tmp.dir.deleteFile(fname) catch {};
+        tmp.dir.deleteFile(scenario_io(), fname) catch {};
 
         const payload = try allocator.alloc(u8, size);
         defer allocator.free(payload);
