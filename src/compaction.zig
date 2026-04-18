@@ -85,10 +85,13 @@ fn finalizeTempFile(dir: std.Io.Dir, tmp: std.Io.File, tmp_name: []const u8, fil
 /// user-space loop if the syscall is unavailable or on non-Linux platforms.
 fn bulkCopy(src: std.Io.File, dst: std.Io.File, zero_copy: bool, src_offset: u64) !u64 {
     if (zero_copy) {
-        return zeroCopyTransfer(src, dst, src_offset) catch |err| switch (err) {
-            // Unsupported or cross-filesystem — fall back.
-            error.OperationNotSupported => return userSpaceCopy(src, dst, src_offset),
-            else => return err,
+        // Use if/else rather than exhaustive switch: on non-Linux targets the
+        // inferred error set of `zeroCopyTransfer` is just `{OperationNotSupported}`
+        // (the Linux-only branch is comptime-pruned), which would make an `else`
+        // switch prong unreachable and fail to compile on Zig 0.16+.
+        return zeroCopyTransfer(src, dst, src_offset) catch |err| {
+            if (err == error.OperationNotSupported) return userSpaceCopy(src, dst, src_offset);
+            return err;
         };
     }
     return userSpaceCopy(src, dst, src_offset);
