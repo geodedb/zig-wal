@@ -48,6 +48,20 @@ pub const RECORD_HEADER_SIZE = record.HEADER_SIZE;
 pub const RECORD_CRC_SIZE = record.CRC_SIZE;
 pub const ENCRYPTION_OVERHEAD = encryption.ENCRYPTION_OVERHEAD;
 
+// otel observability seam. Surfaces `startWalSpan` / `endWalSpan` plus the
+// `enabled` flag. When `-Dwith_otel=false` (the default), every helper
+// collapses to a comptime no-op and the otel dependency is never resolved.
+// The public API is reachable as `wal.observability`.
+pub const observability = @import("observability");
+
+// Bootstrap helper for the enabled build. Only registered as a build import
+// when `-Dwith_otel=true`; under the disabled build the reference resolves
+// to a placeholder empty struct so the public root stays uniform.
+pub const observability_init = if (observability.enabled)
+    @import("observability_init")
+else
+    struct {};
+
 test {
     // Pull in all module tests
     _ = @import("record.zig");

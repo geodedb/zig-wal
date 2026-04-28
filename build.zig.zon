@@ -8,6 +8,11 @@
             .url = "git+https://gitlab.com/devnw/zig/thread-pool.git#ee8440f69012cad49fa1d5f22fe18c68f944d9ab",
             .hash = "thread_pool-0.2.0-11B1Bj_edQCU0Y_-zzOoXuytAgqEkDkfuw2nB-YxUmEL",
         },
+        .otel = .{
+            .url = "git+https://gitlab.com/devnw/zig/otel#20078af231c069d88eaeb79dcf950b94366be624",
+            .hash = "otel-0.1.0-B0v3lsl9MwCHrG8GDrxdFebugqjybfr4KAiplOJKCRG7",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
