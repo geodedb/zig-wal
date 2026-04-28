@@ -60,3 +60,6 @@ coverage/
 
 # Package cache
 zig-pkg/
+
+# Local git worktrees (per-feature isolated checkouts)
+.worktrees/
