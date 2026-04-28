@@ -217,7 +217,16 @@ fn loadDeps(
     // imports the SAME module instance via `addImport` to avoid Zig's
     // "file exists in modules X and X0" error when two independent
     // `addOptions` modules end up sharing a transitive file path.
+    //
+    // The `package_name` option exists to disambiguate the generated
+    // `options.zig`. `b.addOptions()` content-hashes its output to pick
+    // a cache path; if two packages in the same build graph (e.g. wal
+    // and a consumer that also only sets `with_otel = false`) emit
+    // identical bytes, they collapse to the SAME cache file and Zig
+    // rejects it as "one file root of two modules". Tagging by package
+    // name keeps the bytes unique per package.
     const build_options = b.addOptions();
+    build_options.addOption([]const u8, "package_name", "wal");
     build_options.addOption(bool, "with_otel", with_otel);
     const build_options_mod = build_options.createModule();
 
