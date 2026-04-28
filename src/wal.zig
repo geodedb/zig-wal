@@ -16,6 +16,7 @@ const recovery_mod = @import("recovery.zig");
 const compaction = @import("compaction.zig");
 const encryption = @import("encryption.zig");
 const checkpoint_mod = @import("checkpoint.zig");
+const observability = @import("observability");
 
 // ============================================================================
 // Options
@@ -215,7 +216,12 @@ pub const WriteAheadLog = struct {
         file.setPermissions(io, std.Io.File.Permissions.fromMode(0o600)) catch {};
 
         // Recover WAL state: try checkpoint-accelerated path first if enabled,
-        // then fall back to full scan (PERF-0013).
+        // then fall back to full scan (PERF-0013). The outer recovery scan is
+        // mapped to the otel "wal.replay" span — we deliberately do NOT span
+        // individual record reads inside the scan (too noisy).
+        const replay_span = observability.startWalSpan("replay");
+        var replay_ok = false;
+        defer observability.endWalSpan(replay_span, replay_ok, 0);
         const info = blk: {
             if (options.checkpoint) {
                 if (checkpoint_mod.readCheckpoint(dir, filename)) |ckpt| {
@@ -257,6 +263,14 @@ pub const WriteAheadLog = struct {
             else
                 try recovery_mod.recover(allocator, file);
         };
+        // Annotate the replay span with the LSN range covered by this
+        // recovery scan and mark it successful. `setIntAttribute` is
+        // best-effort — telemetry never propagates to the caller.
+        if (observability.enabled) {
+            replay_span.setIntAttribute("wal.replay.start_lsn", 0) catch {};
+            replay_span.setIntAttribute("wal.replay.end_lsn", @intCast(info.last_lsn)) catch {};
+        }
+        replay_ok = true;
 
         // Truncate any bytes beyond the last valid record (torn writes, etc.).
         try file.setLength(std.Io.Threaded.global_single_threaded.io(), info.valid_end);
@@ -352,9 +366,17 @@ pub const WriteAheadLog = struct {
     /// Returns the LSN assigned to this record.
     /// Thread-safe: acquires internal mutex.
     pub fn append(self: *WriteAheadLog, payload: []const u8) !u64 {
+        const span = observability.startWalSpan("append");
+        var ok = false;
+        var bytes_written: u64 = 0;
+        defer observability.endWalSpan(span, ok, bytes_written);
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
-        return self.appendWithLsnLocked(self.current_lsn + 1, payload);
+        const before = self.file_end;
+        const lsn = try self.appendWithLsnLocked(self.current_lsn + 1, payload);
+        bytes_written = self.file_end - before;
+        ok = true;
+        return lsn;
     }
 
     /// Append a single record with a caller-provided LSN.
@@ -366,9 +388,17 @@ pub const WriteAheadLog = struct {
     /// numbering (e.g., Raft log indices) and need the WAL LSN to match.
     /// Thread-safe: acquires internal mutex.
     pub fn appendWithLsn(self: *WriteAheadLog, lsn: u64, payload: []const u8) !u64 {
+        const span = observability.startWalSpan("append");
+        var ok = false;
+        var bytes_written: u64 = 0;
+        defer observability.endWalSpan(span, ok, bytes_written);
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
-        return self.appendWithLsnLocked(lsn, payload);
+        const before = self.file_end;
+        const result = try self.appendWithLsnLocked(lsn, payload);
+        bytes_written = self.file_end - before;
+        ok = true;
+        return result;
     }
 
     /// Internal unlocked implementation of appendWithLsn.
@@ -431,6 +461,10 @@ pub const WriteAheadLog = struct {
     /// Errors if `payloads` is empty (there is nothing to flush).
     /// Thread-safe: acquires internal mutex.
     pub fn appendBatch(self: *WriteAheadLog, payloads: []const []const u8) !u64 {
+        const span = observability.startWalSpan("append_batch");
+        var ok = false;
+        var bytes_written: u64 = 0;
+        defer observability.endWalSpan(span, ok, bytes_written);
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.poisoned) return error.WalPoisoned;
@@ -445,7 +479,11 @@ pub const WriteAheadLog = struct {
             l.* = next_lsn;
         }
 
-        return self.appendBatchWithLsnsLocked(lsns, payloads);
+        const before = self.file_end;
+        const result = try self.appendBatchWithLsnsLocked(lsns, payloads);
+        bytes_written = self.file_end - before;
+        ok = true;
+        return result;
     }
 
     /// Append multiple records with caller-provided LSNs in a single batch.
@@ -461,9 +499,17 @@ pub const WriteAheadLog = struct {
     /// numbering (e.g., Raft log indices) and need WAL LSNs to match.
     /// Thread-safe: acquires internal mutex.
     pub fn appendBatchWithLsns(self: *WriteAheadLog, lsns: []const u64, payloads: []const []const u8) !u64 {
+        const span = observability.startWalSpan("append_batch");
+        var ok = false;
+        var bytes_written: u64 = 0;
+        defer observability.endWalSpan(span, ok, bytes_written);
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
-        return self.appendBatchWithLsnsLocked(lsns, payloads);
+        const before = self.file_end;
+        const result = try self.appendBatchWithLsnsLocked(lsns, payloads);
+        bytes_written = self.file_end - before;
+        ok = true;
+        return result;
     }
 
     /// Internal unlocked implementation of appendBatchWithLsns.
@@ -642,11 +688,16 @@ pub const WriteAheadLog = struct {
     /// Use this when `options.manual_sync` is `true`.
     /// Thread-safe: acquires internal mutex.
     pub fn sync(self: *WriteAheadLog) !void {
+        // Maps to the otel "wal.commit" span — the durable-write boundary.
+        const span = observability.startWalSpan("commit");
+        var ok = false;
+        defer observability.endWalSpan(span, ok, 0);
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.poisoned) return error.WalPoisoned;
         try std.posix.fdatasync(self.file.handle);
         self.appends_since_sync = 0;
+        ok = true;
     }
 
     /// Remove all records with LSN <= `up_to_lsn` by rewriting the WAL.
@@ -663,6 +714,11 @@ pub const WriteAheadLog = struct {
     /// operations will return `error.WalPoisoned` (SEC-0008).
     /// Thread-safe: acquires internal mutex.
     pub fn compact(self: *WriteAheadLog, up_to_lsn: u64) !void {
+        // Maps to the otel "wal.checkpoint" span — compaction is the
+        // WAL's checkpoint primitive (rewrite above the watermark).
+        const span = observability.startWalSpan("checkpoint");
+        var ok = false;
+        defer observability.endWalSpan(span, ok, 0);
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.poisoned) return error.WalPoisoned;
@@ -698,6 +754,7 @@ pub const WriteAheadLog = struct {
         if (self.options.checkpoint) {
             checkpoint_mod.deleteCheckpoint(self.dir, self.filename);
         }
+        ok = true;
     }
 
     /// Reopen the WAL file for appending and seek to end.  If either the
@@ -730,6 +787,9 @@ pub const WriteAheadLog = struct {
     /// If `after_lsn` is 0, truncates the entire file (all records removed).
     /// Thread-safe: acquires internal mutex.
     pub fn truncateAfter(self: *WriteAheadLog, after_lsn: u64) !void {
+        const span = observability.startWalSpan("truncate");
+        var ok = false;
+        defer observability.endWalSpan(span, ok, 0);
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.poisoned) return error.WalPoisoned;
@@ -778,6 +838,7 @@ pub const WriteAheadLog = struct {
         if (self.options.checkpoint) {
             checkpoint_mod.deleteCheckpoint(self.dir, self.filename);
         }
+        ok = true;
     }
 
     // -------------------------------------------------------------------------
