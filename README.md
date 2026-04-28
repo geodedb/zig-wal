@@ -8,6 +8,7 @@ crash-safe, CRC-verified, optionally-encrypted append-only record storage with
 compaction support.
 
 Extracted from the shared mechanics of two production WAL implementations:
+
 - [Geode](https://gitlab.com/devnw/codepros/geode) — graph database delta persistence
 - [Raft](https://gitlab.com/devnw/zig/raft) — consensus log entry persistence
 
@@ -139,6 +140,7 @@ var wal = try WriteAheadLog.init(allocator, dir, "my.wal", .{
 
 On clean `deinit()`, a 28-byte `.ckpt` sidecar file is written atomically.
 On the next `init()`:
+
 - If the checkpoint matches the file size exactly: **O(1) skip** (no scan).
 - If the file grew (records appended after checkpoint): **incremental scan** from the checkpoint position.
 - If the checkpoint is missing, corrupt, or stale: **full scan** fallback.
@@ -165,6 +167,7 @@ All records are encrypted with the single key provided at `init()` time.
 There is no built-in multi-key support.
 
 **Key rotation procedure:**
+
 1. Compact the WAL with the current key (rewrites all retained records).
 2. Close the WAL (`deinit()`).
 3. Re-open with the new key.
@@ -200,6 +203,46 @@ make test-integration
 # Full CI pipeline
 make ci
 ```
+
+## Observability
+
+wal ships an opt-in OpenTelemetry seam. Build with `-Dwith_otel=true`
+to compile in instrumentation; the default (`-Dwith_otel=false`) leaves
+every span site as a comptime no-op so the optimizer eliminates the
+entry/exit calls and the `otel` dependency is never fetched.
+
+Each public WAL operation emits exactly one span per call, named
+`wal.{operation}` with the OpenTelemetry `db.*` semantic-convention
+attributes:
+
+- `db.system = "wal"`
+- `db.operation = <method>` (e.g. `append`, `commit`, `replay`,
+  `checkpoint`, `truncate`)
+- `wal.bytes_written` (when applicable, e.g. on `append` / `append_batch`)
+- `wal.replay.start_lsn` / `wal.replay.end_lsn` (on the outer `replay`
+  scan only — individual record reads are not spanned)
+
+The instrumented entry points are `append` / `appendWithLsn`,
+`appendBatch` / `appendBatchWithLsns`, `sync` (the durable-write
+boundary, mapped to `wal.commit`), `compact` (`wal.checkpoint`),
+`truncateAfter` (`wal.truncate`), and the recovery scan inside `init`
+(`wal.replay`).
+
+```bash
+zig build test                  # default: -Dwith_otel=false (no-op)
+zig build test -Dwith_otel=true # otel compiled in, spans emitted
+```
+
+When enabled, the consumer's process bootstrap calls
+`wal.observability_init.Otel.init(allocator, "service-name")` and
+parks the returned value at a stable address (a `var` in `main` or a
+heap allocation), then calls `installGlobals(&that_value)` so the
+seam can publish its tracer pointer. Span emission is non-fatal:
+every emit is `catch {}`-discarded so a failed exporter cannot
+propagate into WAL operations.
+
+For the full integration recipe and template files, see
+`otel/docs/integration/RECIPE.md` in the otel repo.
 
 ## Contributing
 
