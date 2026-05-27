@@ -9,8 +9,8 @@
             .hash = "thread_pool-0.2.4-11B1BnyUdgCUNlqgBwHNvE4plLwP1s1MAyCjODPafrpo",
         },
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git#214e531c82a3159f5ffe63624e380111e90898c6",
-            .hash = "otel-0.1.5-B0v3lvEMNADmMsONSxCyQcCGyAz0TbResIJdK-rM_Pul",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git#64db4c05079b0f9493c6ecbe60ff3571266589d5",
+            .hash = "otel-0.1.5-B0v3lvEMNAAIk-gM2fawa7UVOS3Whr1K460ZdcNgPeYn",
             .lazy = true,
         },
     },
