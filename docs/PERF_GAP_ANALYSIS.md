@@ -142,8 +142,15 @@ Findings:
 without profiling (no evidence the link-time cost is justified for this library; revisit only with a
 measured binary-size or startup target).
 
-Overall status: **34 findings across 8 reviews. 23 closed; 11 open (PERF-0024..0034, Review 8).**
-PERF-0027 is open only for the clarifying comment/test; its correctness question is resolved (safe).
+**Branch audit-closure-2026-06-11 (Review 8 closure):** PERF-0024 (#167, d89e336),
+PERF-0025 (#168, bbcc626), PERF-0027 (#170, 164043d+bbcc626), PERF-0031 (#180, 3ec9b9b),
+PERF-0033 (#182, 2bf5251) **Closed**. PERF-0026 (#169), PERF-0028 (#177), PERF-0029 (#178),
+PERF-0030 (#179), PERF-0032 (#181), PERF-0034 (#183) remain **Open/Deferred** — each requires
+either a crossover measurement first (PERF-0026/0030), dedicated bench variants (PERF-0028/0029),
+or wiring median into the loop before a trustworthy regression gate is feasible (PERF-0032/0034).
+
+Overall status: **34 findings across 8 reviews. 28 closed; 6 open/deferred (PERF-0026, 0028-0030, 0032, 0034).**
+PERF-0027 correctness question is resolved (safe); the issue was closed with the aliasing comment landed.
 
 Key metrics from post-Review 4 benchmarks (`zig build bench`):
 
@@ -195,12 +202,12 @@ Post-Review 4 improvements: PERF-0020 + PERF-0021 combined improved encrypted it
 | 20 | P2 | 48 | Iterator encrypted path allocates blob per record (no reuse buffer) | `iterator.zig` / `encryption.zig` | Confirmed | [#116](https://gitlab.com/devnw/zig/wal/-/issues/116) | **Closed** |
 | 21 | Info | 16 | Iterator uses unbuffered I/O — many small read syscalls per record | `iterator.zig` | Confirmed | [#117](https://gitlab.com/devnw/zig/wal/-/issues/117) | **Closed** |
 | 22 | Info | 8 | CI pipeline does not cache Zig build artifacts (.zig-cache) | `.gitlab-ci.yml` | Confirmed | [#118](https://gitlab.com/devnw/zig/wal/-/issues/118) | **Closed** |
-| 23 | P1 | 64 | truncateAfter: unbuffered 12-byte pread per record + full fsync (vs fdatasync) | `wal.zig` | Suspected | [#167](https://gitlab.com/devnw/zig/wal/-/issues/167) | **Open** |
+| 23 | P1 | 64 | truncateAfter: unbuffered 12-byte pread per record + full fsync (vs fdatasync) | `wal.zig` | Suspected | [#167](https://gitlab.com/devnw/zig/wal/-/issues/167) | **Closed** |
 | 24 | P2 | 36 | Parallel batch triggers at N=2 with 5-7 allocs; no min-batch threshold | `wal.zig` | Suspected | [#169](https://gitlab.com/devnw/zig/wal/-/issues/169) | **Open** |
-| 25 | P2 | 32 | Encrypted batch tail-scratch: proven safe across 200k shapes; comment/test only | `wal.zig` | Confirmed (safe) | [#170](https://gitlab.com/devnw/zig/wal/-/issues/170) | **Open** |
-| 26 | P3 | 8 | Double file.stat() on checkpoint init path | `recovery.zig` / `wal.zig` | Confirmed | [#168](https://gitlab.com/devnw/zig/wal/-/issues/168) | **Open** |
-| 27 | P1 | 64 | bench builds WAL module at Debug while bench exe is ReleaseFast — local numbers 3-10x off | `build.zig` / `Makefile` | Confirmed | [#180](https://gitlab.com/devnw/zig/wal/-/issues/180) | **Open** |
-| 28 | P2 | 64 | No write-side MAX_RECORD_SIZE / batch-byte cap — unbounded alloc + silent-truncation asymmetry | `wal.zig` / `record.zig` | Confirmed | [#182](https://gitlab.com/devnw/zig/wal/-/issues/182) | **Open** |
+| 25 | P2 | 32 | Encrypted batch tail-scratch: proven safe across 200k shapes; comment/test only | `wal.zig` | Confirmed (safe) | [#170](https://gitlab.com/devnw/zig/wal/-/issues/170) | **Closed** |
+| 26 | P3 | 8 | Double file.stat() on checkpoint init path | `recovery.zig` / `wal.zig` | Confirmed | [#168](https://gitlab.com/devnw/zig/wal/-/issues/168) | **Closed** |
+| 27 | P1 | 64 | bench builds WAL module at Debug while bench exe is ReleaseFast — local numbers 3-10x off | `build.zig` / `Makefile` | Confirmed | [#180](https://gitlab.com/devnw/zig/wal/-/issues/180) | **Closed** |
+| 28 | P2 | 64 | No write-side MAX_RECORD_SIZE / batch-byte cap — unbounded alloc + silent-truncation asymmetry | `wal.zig` / `record.zig` | Confirmed | [#182](https://gitlab.com/devnw/zig/wal/-/issues/182) | **Closed** |
 | 29 | P2 | 36 | Checkpoint O(1) recovery path has no bench coverage | `bench/main.zig` | Confirmed | [#177](https://gitlab.com/devnw/zig/wal/-/issues/177) | **Open** |
 | 30 | P2 | 36 | zero_copy_compaction path has no bench coverage | `bench/main.zig` | Confirmed | [#178](https://gitlab.com/devnw/zig/wal/-/issues/178) | **Open** |
 | 31 | P2 | 36 | Thread-pool batch crossover never measured (scale_bench min batch=100) | `bench/scale_bench.zig` | Confirmed | [#179](https://gitlab.com/devnw/zig/wal/-/issues/179) | **Open** |

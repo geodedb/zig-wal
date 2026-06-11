@@ -3,7 +3,7 @@
 > **Source of truth:** [GitLab Issues](https://gitlab.com/devnw/zig/wal/-/issues?label_name%5B%5D=quality)
 > filtered by label `quality`. This file mirrors findings status.
 >
-> **Last updated:** 2026-06-11 (Review 7 — QA-0074–QA-0084 opened)
+> **Last updated:** 2026-06-11 (Review 7 closure — branch audit-closure-2026-06-11: QA-0074–QA-0084 all Closed)
 
 ## Summary
 
@@ -18,26 +18,30 @@
 | Low severity | 27 |
 | Confirmed | 78 |
 | Suspected | 1 |
-| Open | 11 |
-| Closed | 68 |
+| Open | 0 |
+| Closed | 79 |
 
-## Stack-Ranked Findings (Review 7 — Open)
+All Review 7 findings (QA-0074–QA-0084) were implemented, tested, and closed on branch
+`audit-closure-2026-06-11` (129 unit + 1 skip / 39 integration tests pass; appsec/quality/perf
+re-reviews clean). See per-row commit references below.
+
+## Stack-Ranked Findings (Review 7 — Closed)
 
 PriorityScore = Impact(1–5) × Likelihood(1–5) × 4. Max = 100.
 
 | # | ID | Score | Severity | Category | Confidence | Title | File(s) | Issue | Status |
 |---|-----|-------|----------|----------|------------|-------|---------|-------|--------|
-| 1 | QA-0074 | 60 | High | CI/CD | Confirmed | build.zig.zon minimum_zig_version="0.15.1" but code requires Zig 0.16 (std.Io.*) | build.zig.zon:5, README.md:4 | [#147](https://gitlab.com/devnw/zig/wal/-/issues/147) | Open |
-| 2 | QA-0075 | 48 | High | Maintainability | Confirmed | observability seam hardcodes enabled=false; -Dwith_otel=true fails its own test and the seam is dead | src/observability.zig:33, tests/observability_disabled_test.zig:25 | [#148](https://gitlab.com/devnw/zig/wal/-/issues/148) | Open |
-| 3 | QA-0076 | 36 | Medium | CI/CD | Confirmed | pre-commit run --all-files fails — unstaged auto-fixes, 6× MD040 bare fences, 13× MD029 numbering | CONTRIBUTING.md:48, .gitlab/issue_templates/Bug Report.md:44, docs/superpowers/plans/2026-03-21-wal-library.md:15,37,67,1533, docs/SECURITY_REVIEW_NOTES.md | [#149](https://gitlab.com/devnw/zig/wal/-/issues/149) | Open |
-| 4 | QA-0077 | 36 | Medium | CI/CD | Confirmed | examples/basic.zig does not compile; example absent from CI; README Quick Start uses 0.15 idioms | examples/basic.zig:70, Makefile, .gitlab-ci.yml, README.md | [#150](https://gitlab.com/devnw/zig/wal/-/issues/150) | Open |
-| 5 | QA-0078 | 36 | Medium | Documentation | Confirmed | README claims "Zero dependencies" but build.zig.zon declares thread_pool (required) + otel (lazy) | README.md:22, build.zig.zon | [#151](https://gitlab.com/devnw/zig/wal/-/issues/151) | Open |
-| 6 | QA-0079 | 36 | Medium | Maintainability | Confirmed | Silent recovery truncation — no std.log anywhere in src/; startup data loss undiagnosable | recovery.zig:160,166,227-234, wal.zig:276 | [#152](https://gitlab.com/devnw/zig/wal/-/issues/152) | Open |
-| 7 | QA-0080 | 8 | Low | Maintainability | Confirmed | Timer + BenchTmpDir duplicated verbatim across bench entry points | bench/main.zig:20-75, bench/scale_bench.zig:27-82 | [#153](https://gitlab.com/devnw/zig/wal/-/issues/153) | Open |
-| 8 | QA-0081 | 4 | Low | Documentation | Confirmed | Copyright headers say 2024-2025 in all 24 .zig files; current year is 2026 | All 24 .zig files | [#154](https://gitlab.com/devnw/zig/wal/-/issues/154) | Open |
-| 9 | QA-0082 | 8 | Low | Documentation | Confirmed | QA-0055 Won't-Fix rationale claims 3-4 levels nesting; actual is 5-6 | docs/QUALITY_GAP_ANALYSIS.md (Review 4), iterator.zig:105-195 | [#155](https://gitlab.com/devnw/zig/wal/-/issues/155) | Open |
-| 10 | QA-0083 | 8 | Low | Cleanup | Confirmed | Dead `_ = std.c.lseek(...)` at compaction.zig:294; both copy paths are positional | compaction.zig:294 | [#156](https://gitlab.com/devnw/zig/wal/-/issues/156) | Open |
-| 11 | QA-0084 | 4 | Low | Readability | Confirmed | Sequential encrypted batch tail-scratch aliasing is correct but uncommented | wal.zig:646-648 (cf. encryption.zig:444-446) | [#157](https://gitlab.com/devnw/zig/wal/-/issues/157) | Open |
+| 1 | QA-0074 | 60 | High | CI/CD | Confirmed | build.zig.zon minimum_zig_version="0.15.1" but code requires Zig 0.16 (std.Io.*) | build.zig.zon:5, README.md:4 | [#147](https://gitlab.com/devnw/zig/wal/-/issues/147) | Closed |
+| 2 | QA-0075 | 48 | High | Maintainability | Confirmed | observability seam hardcodes enabled=false; -Dwith_otel=true fails its own test and the seam is dead | src/observability.zig:33, tests/observability_disabled_test.zig:25 | [#148](https://gitlab.com/devnw/zig/wal/-/issues/148) | Closed |
+| 3 | QA-0076 | 36 | Medium | CI/CD | Confirmed | pre-commit run --all-files fails — unstaged auto-fixes, 6× MD040 bare fences, 13× MD029 numbering | CONTRIBUTING.md:48, .gitlab/issue_templates/Bug Report.md:44, docs/superpowers/plans/2026-03-21-wal-library.md:15,37,67,1533, docs/SECURITY_REVIEW_NOTES.md | [#149](https://gitlab.com/devnw/zig/wal/-/issues/149) | Closed |
+| 4 | QA-0077 | 36 | Medium | CI/CD | Confirmed | examples/basic.zig does not compile; example absent from CI; README Quick Start uses 0.15 idioms | examples/basic.zig:70, Makefile, .gitlab-ci.yml, README.md | [#150](https://gitlab.com/devnw/zig/wal/-/issues/150) | Closed |
+| 5 | QA-0078 | 36 | Medium | Documentation | Confirmed | README claims "Zero dependencies" but build.zig.zon declares thread_pool (required) + otel (lazy) | README.md:22, build.zig.zon | [#151](https://gitlab.com/devnw/zig/wal/-/issues/151) | Closed |
+| 6 | QA-0079 | 36 | Medium | Maintainability | Confirmed | Silent recovery truncation — no std.log anywhere in src/; startup data loss undiagnosable | recovery.zig:160,166,227-234, wal.zig:276 | [#152](https://gitlab.com/devnw/zig/wal/-/issues/152) | Closed |
+| 7 | QA-0080 | 8 | Low | Maintainability | Confirmed | Timer + BenchTmpDir duplicated verbatim across bench entry points | bench/main.zig:20-75, bench/scale_bench.zig:27-82 | [#153](https://gitlab.com/devnw/zig/wal/-/issues/153) | Closed |
+| 8 | QA-0081 | 4 | Low | Documentation | Confirmed | Copyright headers say 2024-2025 in all 24 .zig files; current year is 2026 | All 24 .zig files | [#154](https://gitlab.com/devnw/zig/wal/-/issues/154) | Closed |
+| 9 | QA-0082 | 8 | Low | Documentation | Confirmed | QA-0055 Won't-Fix rationale claims 3-4 levels nesting; actual is 5-6 | docs/QUALITY_GAP_ANALYSIS.md (Review 4), iterator.zig:105-195 | [#155](https://gitlab.com/devnw/zig/wal/-/issues/155) | Closed |
+| 10 | QA-0083 | 8 | Low | Cleanup | Confirmed | Dead `_ = std.c.lseek(...)` at compaction.zig:294; both copy paths are positional | compaction.zig:294 | [#156](https://gitlab.com/devnw/zig/wal/-/issues/156) | Closed |
+| 11 | QA-0084 | 4 | Low | Readability | Confirmed | Sequential encrypted batch tail-scratch aliasing is correct but uncommented | wal.zig:646-648 (cf. encryption.zig:444-446) | [#157](https://gitlab.com/devnw/zig/wal/-/issues/157) | Closed |
 
 ### Review 7 Findings by Category
 
@@ -71,7 +75,7 @@ QA-0083→QA-0084.
 **Comment-only updates (no new issue — folded into existing tracking):**
 
 - **CLAUDE.md/README documentation drift** → consolidated onto **#145 (QA-0072)** via a scope comment.
-  Full scope: CLAUDE.md:9,10,32-41,69,72 (counts 117 unit / 39 integration, 11 modules, `std.Io.RwLock`)
+  Full scope: CLAUDE.md:9,10,32-41,69,72 (counts 129 unit (+1 skip) / 39 integration, 11 modules, `std.Io.RwLock`)
   plus README:4 (Zig badge) and README:189 (stale counts). The `build.zig.zon` `minimum_zig_version`
   companion is tracked separately as QA-0074 (#147).
 - **truncateAfter encrypted data-loss** (internally QA-0077) → root cause already tracked as

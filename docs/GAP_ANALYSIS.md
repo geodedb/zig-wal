@@ -3,7 +3,7 @@
 > **Source of truth:** [GitLab Issues](https://gitlab.com/devnw/zig/wal/-/issues?label_name%5B%5D=security)
 > filtered by label `security`. This file mirrors findings status.
 >
-> **Last updated:** 2026-06-11 (Review 16 — checkpoint/recovery integrity cluster, SEC-0044–SEC-0052)
+> **Last updated:** 2026-06-11 (Review 17 closure — branch audit-closure-2026-06-11: SEC-0041/0043–0052 closed, SEC-0042 deferred; QA-0069–0073 closed)
 
 ## Summary
 
@@ -133,8 +133,8 @@ confirmed correctly scoped out. Three consecutive zero-new-finding reviews (Revi
 Automated scans (gitleaks, trufflehog, semgrep, trivy, syft+grype, osv-scanner, checkov)
 returned zero application-level findings across all fourteen reviews.
 
-All 110 unit tests, 25 integration/scenario tests, and 4 fuzz tests pass at Debug,
-ReleaseSafe, ReleaseFast, and ReleaseSmall optimization levels (139 total). No Critical
+All 129 unit tests (+ 1 permanent skip), 39 integration/scenario tests, and 4 fuzz tests
+pass at Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall optimization levels. No Critical
 or High severity findings were found in any review. Three consecutive zero-new-finding
 reviews (12, 13, 14) confirm convergence.
 
@@ -144,7 +144,7 @@ reviews (12, 13, 14) confirm convergence.
 3 **closed** with documentation updates.
 
 **Review 15** (2026-06-11): 8 new findings — 3 security (SEC-0041 through SEC-0043) and
-5 quality/documentation (QA-0069 through QA-0073). All 8 are **Open** and tracked on GitLab
+5 quality/documentation (QA-0069 through QA-0073). Tracked on GitLab
 ([#139](https://gitlab.com/devnw/zig/wal/-/issues/139)–[#146](https://gitlab.com/devnw/zig/wal/-/issues/146)).
 Primary themes: `truncateAfter` is the only WAL scan that bypasses the validated record-scan
 path (no CRC/AEAD check, no LSN monotonicity, misreads encrypted framing — SEC-0041, SEC-0043);
@@ -152,10 +152,14 @@ SBOM/provenance drift in the `otel` dependency pin (SEC-0042); and a cluster of 
 accuracy defects in checkpoint metadata, `loadKeyFromEnv` thread-safety, two misleading code comments,
 CLAUDE.md's RwLock type and test count, and a stale GAP-0003 resolution test reference (QA-0069 through
 QA-0073). No Critical or High severity findings. SEC-0043 is dependent on and subsumed by SEC-0041.
+**Branch audit-closure-2026-06-11:** SEC-0041 (#139, d89e336), SEC-0043 (#141, d89e336),
+QA-0069 (#142, 5c2006a), QA-0070 (#143, 5c2006a), QA-0071 (#144, 5c2006a), QA-0072 (#145,
+164043d+1dfd246), QA-0073 (#146, 0df088b) all **Closed**. SEC-0042 (#140) remains
+**Open/Deferred** (requires upstream otel re-release; out of scope for this library-only branch).
 
 **Review 16** (2026-06-11): 9 new security findings (SEC-0044 through SEC-0052) from a deep
-adversarial review plus automated scans — 3 Medium, 3 Low, 3 Info. All 9 are **Open** and tracked on
-GitLab ([#158](https://gitlab.com/devnw/zig/wal/-/issues/158)–[#166](https://gitlab.com/devnw/zig/wal/-/issues/166)).
+adversarial review plus automated scans — 3 Medium, 3 Low, 3 Info. Tracked on GitLab
+([#158](https://gitlab.com/devnw/zig/wal/-/issues/158)–[#166](https://gitlab.com/devnw/zig/wal/-/issues/166)).
 Primary theme: the **checkpoint/incremental-recovery integrity cluster** — a stale/cross-WAL checkpoint
 can shift the recovery scan start and silently truncate valid records (SEC-0044), checkpoint integrity
 is CRC-32 only with no key binding (SEC-0045), and incremental recovery trusts the `[0, valid_end)`
@@ -169,6 +173,10 @@ The scan's **NEW-04** (CI catalog components tag-pinned, not SHA-pinned, `.gitla
 issue created (see Won't Do section). A reachability comment was added to SEC-0041 (#139) confirming a
 hot Raft caller, zero test coverage, and empirical whole-file truncation on encrypted WALs, with a
 recommendation to raise it to `priority::high`.
+**Branch audit-closure-2026-06-11:** SEC-0044 (#158, 87f4785), SEC-0045 (#159, 87f4785),
+SEC-0046 (#160, 87f4785), SEC-0047 (#161, 87f4785), SEC-0048 (#162, 5c2006a), SEC-0049 (#163,
+0df088b), SEC-0050 (#164, 164043d), SEC-0051 (#165, 5c2006a), SEC-0052 (#166, 0df088b) all
+**Closed**. 129 unit (+ 1 skip) + 39 integration tests pass.
 
 ## Stack-Ranked Findings
 
@@ -214,23 +222,23 @@ recommendation to raise it to `priority::high`.
 | 38 | Low | 24 | Encrypted WAL mode accepts plaintext record injection (downgrade) | `recovery.zig` / `iterator.zig` / `compaction.zig` | Confirmed | [#104](https://gitlab.com/devnw/zig/wal/-/issues/104) | **Closed** |
 | 39 | Info | 8 | decryptRecord/decryptRecordInPlace @intCast overflow for oversized blobs | `encryption.zig` | Confirmed | [#105](https://gitlab.com/devnw/zig/wal/-/issues/105) | **Closed** |
 | 40 | Info | 8 | No fuzz testing infrastructure for binary format parsing | `record.zig` / `encryption.zig` / `recovery.zig` | Confirmed | [#106](https://gitlab.com/devnw/zig/wal/-/issues/106) | **Closed** |
-| 41 | Medium | — | `truncateAfter` skips CRC/AEAD verification, LSN monotonicity, and misreads encrypted framing | `wal.zig` | Confirmed | [#139](https://gitlab.com/devnw/zig/wal/-/issues/139) | **Open** |
+| 41 | Medium | — | `truncateAfter` skips CRC/AEAD verification, LSN monotonicity, and misreads encrypted framing | `wal.zig` | Confirmed | [#139](https://gitlab.com/devnw/zig/wal/-/issues/139) | **Closed** |
 | 42 | Medium | — | otel dependency `?ref=v0.1.10` pins a commit that resolves to otel-0.1.9 | `build.zig.zon` | Confirmed | [#140](https://gitlab.com/devnw/zig/wal/-/issues/140) | **Open** |
-| 43 | Low | — | `truncateAfter` corrupt-header guard checks only `payload_len`, not full record size (dep. SEC-0041) | `wal.zig` | Confirmed | [#141](https://gitlab.com/devnw/zig/wal/-/issues/141) | **Open** |
-| 44 | Low | — | `deinit` hardcodes `record_count = 0` in checkpoint, structurally incorrect for non-empty WAL | `wal.zig` | Confirmed | [#142](https://gitlab.com/devnw/zig/wal/-/issues/142) | **Open** |
-| 45 | Low | — | `loadKeyFromEnv` uses `std.c.getenv` — thread-safety caveat not documented | `encryption.zig` | Confirmed | [#143](https://gitlab.com/devnw/zig/wal/-/issues/143) | **Open** |
-| 46 | Info | — | Two misleading code comments — encryption overlap threshold and iterator blob_buf lifecycle | `encryption.zig` / `iterator.zig` | Confirmed | [#144](https://gitlab.com/devnw/zig/wal/-/issues/144) | **Open** |
-| 47 | Info | — | CLAUDE.md states wrong RwLock type and stale test count | `CLAUDE.md` | Confirmed | [#145](https://gitlab.com/devnw/zig/wal/-/issues/145) | **Open** |
-| 48 | Info | — | GAP_ANALYSIS_RESOLVED.md GAP-0003 names tests that no longer exist under those names | `docs/GAP_ANALYSIS_RESOLVED.md` | Confirmed | [#146](https://gitlab.com/devnw/zig/wal/-/issues/146) | **Open** |
-| 49 | Medium | 24 | Cross-WAL/stale checkpoint shifts recovery scan start, enabling silent truncation of valid records | `checkpoint.zig` / `recovery.zig` / `wal.zig` | Confirmed | [#158](https://gitlab.com/devnw/zig/wal/-/issues/158) | **Open** |
-| 50 | Medium | 24 | Checkpoint integrity is CRC-32 only (forgeable); encryption_key never mixed in | `checkpoint.zig` / `wal.zig` | Confirmed | [#159](https://gitlab.com/devnw/zig/wal/-/issues/159) | **Open** |
-| 51 | Medium | 24 | Incremental recovery trusts prefix `[0, valid_end)` without re-validating head records (umbrella for SEC-0044/0045) | `recovery.zig` / `wal.zig` / `checkpoint.zig` | Confirmed | [#160](https://gitlab.com/devnw/zig/wal/-/issues/160) | **Open** |
-| 52 | Low | 16 | Stale-sidecar deletion after compact/truncateAfter swallows all errors | `wal.zig` / `checkpoint.zig` | Confirmed | [#161](https://gitlab.com/devnw/zig/wal/-/issues/161) | **Open** |
-| 53 | Low | 16 | Iterator holds no lock for lifetime; concurrent in-place truncateAfter yields non-atomic reads (undocumented) | `wal.zig` / `iterator.zig` | Confirmed | [#162](https://gitlab.com/devnw/zig/wal/-/issues/162) | **Open** |
-| 54 | Low | 8 | sync_diamond_deps.py parse_target lacks format validation on tref/tcommit | `scripts/sync_diamond_deps.py` | Confirmed | [#163](https://gitlab.com/devnw/zig/wal/-/issues/163) | **Open** |
-| 55 | Info | 8 | .gitignore missing `__pycache__/` and `*.py[co]` | `.gitignore` | Confirmed | [#164](https://gitlab.com/devnw/zig/wal/-/issues/164) | **Open** |
-| 56 | Info | 8 | AAD binds record framing but not log position; splice/reorder blocked only by LSN monotonicity gate | `encryption.zig` | Confirmed | [#165](https://gitlab.com/devnw/zig/wal/-/issues/165) | **Open** |
-| 57 | Info | 8 | Vendored protoc binary is 0777 in `zig-pkg/` local cache (git-ignored hygiene) | `zig-pkg/` (cache) | Confirmed | [#166](https://gitlab.com/devnw/zig/wal/-/issues/166) | **Open** |
+| 43 | Low | — | `truncateAfter` corrupt-header guard checks only `payload_len`, not full record size (dep. SEC-0041) | `wal.zig` | Confirmed | [#141](https://gitlab.com/devnw/zig/wal/-/issues/141) | **Closed** |
+| 44 | Low | — | `deinit` hardcodes `record_count = 0` in checkpoint, structurally incorrect for non-empty WAL | `wal.zig` | Confirmed | [#142](https://gitlab.com/devnw/zig/wal/-/issues/142) | **Closed** |
+| 45 | Low | — | `loadKeyFromEnv` uses `std.c.getenv` — thread-safety caveat not documented | `encryption.zig` | Confirmed | [#143](https://gitlab.com/devnw/zig/wal/-/issues/143) | **Closed** |
+| 46 | Info | — | Two misleading code comments — encryption overlap threshold and iterator blob_buf lifecycle | `encryption.zig` / `iterator.zig` | Confirmed | [#144](https://gitlab.com/devnw/zig/wal/-/issues/144) | **Closed** |
+| 47 | Info | — | CLAUDE.md states wrong RwLock type and stale test count | `CLAUDE.md` | Confirmed | [#145](https://gitlab.com/devnw/zig/wal/-/issues/145) | **Closed** |
+| 48 | Info | — | GAP_ANALYSIS_RESOLVED.md GAP-0003 names tests that no longer exist under those names | `docs/GAP_ANALYSIS_RESOLVED.md` | Confirmed | [#146](https://gitlab.com/devnw/zig/wal/-/issues/146) | **Closed** |
+| 49 | Medium | 24 | Cross-WAL/stale checkpoint shifts recovery scan start, enabling silent truncation of valid records | `checkpoint.zig` / `recovery.zig` / `wal.zig` | Confirmed | [#158](https://gitlab.com/devnw/zig/wal/-/issues/158) | **Closed** |
+| 50 | Medium | 24 | Checkpoint integrity is CRC-32 only (forgeable); encryption_key never mixed in | `checkpoint.zig` / `wal.zig` | Confirmed | [#159](https://gitlab.com/devnw/zig/wal/-/issues/159) | **Closed** |
+| 51 | Medium | 24 | Incremental recovery trusts prefix `[0, valid_end)` without re-validating head records (umbrella for SEC-0044/0045) | `recovery.zig` / `wal.zig` / `checkpoint.zig` | Confirmed | [#160](https://gitlab.com/devnw/zig/wal/-/issues/160) | **Closed** |
+| 52 | Low | 16 | Stale-sidecar deletion after compact/truncateAfter swallows all errors | `wal.zig` / `checkpoint.zig` | Confirmed | [#161](https://gitlab.com/devnw/zig/wal/-/issues/161) | **Closed** |
+| 53 | Low | 16 | Iterator holds no lock for lifetime; concurrent in-place truncateAfter yields non-atomic reads (undocumented) | `wal.zig` / `iterator.zig` | Confirmed | [#162](https://gitlab.com/devnw/zig/wal/-/issues/162) | **Closed** |
+| 54 | Low | 8 | sync_diamond_deps.py parse_target lacks format validation on tref/tcommit | `scripts/sync_diamond_deps.py` | Confirmed | [#163](https://gitlab.com/devnw/zig/wal/-/issues/163) | **Closed** |
+| 55 | Info | 8 | .gitignore missing `__pycache__/` and `*.py[co]` | `.gitignore` | Confirmed | [#164](https://gitlab.com/devnw/zig/wal/-/issues/164) | **Closed** |
+| 56 | Info | 8 | AAD binds record framing but not log position; splice/reorder blocked only by LSN monotonicity gate | `encryption.zig` | Confirmed | [#165](https://gitlab.com/devnw/zig/wal/-/issues/165) | **Closed** |
+| 57 | Info | 8 | Vendored protoc binary is 0777 in `zig-pkg/` local cache (git-ignored hygiene) | `zig-pkg/` (cache) | Confirmed | [#166](https://gitlab.com/devnw/zig/wal/-/issues/166) | **Closed** |
 
 ## Scoring
 
@@ -263,7 +271,7 @@ performance review, and adversarial security review.
 - **Platform:** GitLab (gitlab.com/devnw/zig/wal)
 - **Languages:** Zig 0.15.1+
 - **Scope:** Entire repo (9 source modules, ~4,100 LOC)
-- **Test suite:** 99 unit + 25 integration + 4 fuzz = 128 tests, all passing at 4 optimization levels
+- **Test suite:** 129 unit (+ 1 skip) + 39 integration + 4 fuzz = 172 tests, all passing at 4 optimization levels
 
 ### Domain Results
 
@@ -318,8 +326,10 @@ namespaces contiguous. All severity classifications confirmed appropriate. Zero 
 | Low | 14 |
 | Info | 19 |
 
-40 total findings across 14 reviews. **All 40 closed.** 0 new findings. 2 Won't Do (SEC-0014,
-SEC-0016). Three consecutive zero-new-finding reviews (12, 13, 14) confirm convergence.
+52 total findings across 17 reviews (Reviews 15-16 + closure branch). **51 closed** (SEC-0042
+deferred). 2 Won't Do (SEC-0014, SEC-0016). Three consecutive zero-new-finding reviews (12, 13, 14)
+confirmed convergence before Reviews 15-16 opened 17 new findings; branch audit-closure-2026-06-11
+closed 16 of 17 (SEC-0042 deferred pending upstream otel).
 **Immediate actions:** 0 (no secret rotations, no active vulnerabilities).
 
 ### Cross-Domain Summary
@@ -343,13 +353,19 @@ SEC-0016). Three consecutive zero-new-finding reviews (12, 13, 14) confirm conve
 
 ### Open Findings
 
-**Zero open findings.** All 3 previously open items have been closed:
+**Branch audit-closure-2026-06-11:** 32 additional findings closed across SEC (Reviews 15-16),
+PERF (Review 8), and QA (Reviews 7 + 15). One deferred: SEC-0042 (#140, otel upstream). Seven
+deferred: PERF-0026/#169, PERF-0028/#177, PERF-0029/#178, PERF-0030/#179, PERF-0032/#181,
+PERF-0034/#183, and SEC-0042/#140.
+
+**Previous open items (pre-branch):**
 
 - QA-0068 (Score 48): Closed — README corrected
 - PERF-0023 (Score 48): Closed — CI bench stage added
 - QA-0067 (Score 24): Closed — filename now owned
 
-**Deferred items:** None — PERF-0013 and PERF-0014 have been implemented with configuration options.
+**Deferred items:** SEC-0042 (#140) — otel tag/version mismatch; requires upstream re-release.
+PERF-0013 and PERF-0014 have been implemented with configuration options.
 
 ### Positive Observations
 
@@ -395,15 +411,15 @@ severity findings.
 
 | Gap-ID | Severity | Score | Finding | Component | GitLab | Status |
 |--------|----------|-------|---------|-----------|--------|--------|
-| SEC-0044 | Medium | 24 | Cross-WAL/stale checkpoint shifts recovery scan start, enabling silent truncation | `checkpoint.zig` / `recovery.zig` / `wal.zig` | [#158](https://gitlab.com/devnw/zig/wal/-/issues/158) | **Open** |
-| SEC-0045 | Medium | 24 | Checkpoint integrity is CRC-32 only; `encryption_key` never mixed in | `checkpoint.zig` / `wal.zig` | [#159](https://gitlab.com/devnw/zig/wal/-/issues/159) | **Open** |
-| SEC-0046 | Medium | 24 | Incremental recovery trusts prefix `[0, valid_end)` without re-validation (umbrella) | `recovery.zig` / `wal.zig` / `checkpoint.zig` | [#160](https://gitlab.com/devnw/zig/wal/-/issues/160) | **Open** |
-| SEC-0047 | Low | 16 | Stale-sidecar deletion after compact/truncateAfter swallows all errors | `wal.zig` / `checkpoint.zig` | [#161](https://gitlab.com/devnw/zig/wal/-/issues/161) | **Open** |
-| SEC-0048 | Low | 16 | Iterator holds no lock for lifetime; concurrent in-place truncateAfter non-atomic (undocumented) | `wal.zig` / `iterator.zig` | [#162](https://gitlab.com/devnw/zig/wal/-/issues/162) | **Open** |
-| SEC-0049 | Low | 8 | `sync_diamond_deps.py` parse_target lacks format validation on tref/tcommit | `scripts/sync_diamond_deps.py` | [#163](https://gitlab.com/devnw/zig/wal/-/issues/163) | **Open** |
-| SEC-0050 | Info | 8 | `.gitignore` missing `__pycache__/` and `*.py[co]` | `.gitignore` | [#164](https://gitlab.com/devnw/zig/wal/-/issues/164) | **Open** |
-| SEC-0051 | Info | 8 | AAD binds record framing but not log position (defense-in-depth note) | `encryption.zig` | [#165](https://gitlab.com/devnw/zig/wal/-/issues/165) | **Open** |
-| SEC-0052 | Info | 8 | Vendored protoc binary is 0777 in `zig-pkg/` local cache (git-ignored hygiene) | `zig-pkg/` (cache) | [#166](https://gitlab.com/devnw/zig/wal/-/issues/166) | **Open** |
+| SEC-0044 | Medium | 24 | Cross-WAL/stale checkpoint shifts recovery scan start, enabling silent truncation | `checkpoint.zig` / `recovery.zig` / `wal.zig` | [#158](https://gitlab.com/devnw/zig/wal/-/issues/158) | **Closed** |
+| SEC-0045 | Medium | 24 | Checkpoint integrity is CRC-32 only; `encryption_key` never mixed in | `checkpoint.zig` / `wal.zig` | [#159](https://gitlab.com/devnw/zig/wal/-/issues/159) | **Closed** |
+| SEC-0046 | Medium | 24 | Incremental recovery trusts prefix `[0, valid_end)` without re-validation (umbrella) | `recovery.zig` / `wal.zig` / `checkpoint.zig` | [#160](https://gitlab.com/devnw/zig/wal/-/issues/160) | **Closed** |
+| SEC-0047 | Low | 16 | Stale-sidecar deletion after compact/truncateAfter swallows all errors | `wal.zig` / `checkpoint.zig` | [#161](https://gitlab.com/devnw/zig/wal/-/issues/161) | **Closed** |
+| SEC-0048 | Low | 16 | Iterator holds no lock for lifetime; concurrent in-place truncateAfter non-atomic (undocumented) | `wal.zig` / `iterator.zig` | [#162](https://gitlab.com/devnw/zig/wal/-/issues/162) | **Closed** |
+| SEC-0049 | Low | 8 | `sync_diamond_deps.py` parse_target lacks format validation on tref/tcommit | `scripts/sync_diamond_deps.py` | [#163](https://gitlab.com/devnw/zig/wal/-/issues/163) | **Closed** |
+| SEC-0050 | Info | 8 | `.gitignore` missing `__pycache__/` and `*.py[co]` | `.gitignore` | [#164](https://gitlab.com/devnw/zig/wal/-/issues/164) | **Closed** |
+| SEC-0051 | Info | 8 | AAD binds record framing but not log position (defense-in-depth note) | `encryption.zig` | [#165](https://gitlab.com/devnw/zig/wal/-/issues/165) | **Closed** |
+| SEC-0052 | Info | 8 | Vendored protoc binary is 0777 in `zig-pkg/` local cache (git-ignored hygiene) | `zig-pkg/` (cache) | [#166](https://gitlab.com/devnw/zig/wal/-/issues/166) | **Closed** |
 
 ### Checkpoint/recovery integrity cluster — umbrella note
 
@@ -415,7 +431,7 @@ the recommended single remediation binds the checkpoint to WAL identity + HMAC (
 validates that `valid_end` lands on a CRC/AEAD-valid record boundary before trusting the prefix. All
 three are cross-linked on GitLab. Mitigation present today: `options.checkpoint` defaults to `false`.
 
-### SEC-0044: Cross-WAL/stale checkpoint shifts recovery scan start, enabling silent truncation of valid records (Medium, Score 24) — **Open**
+### SEC-0044: Cross-WAL/stale checkpoint shifts recovery scan start, enabling silent truncation of valid records (Medium, Score 24) — **Closed** (87f4785)
 
 **Evidence:** `src/checkpoint.zig:52-56` — `Checkpoint` carries only `last_lsn`/`valid_end`/`record_count`,
 with no WAL-identity binding, so any `.ckpt` validates against any WAL of sufficient size.
@@ -442,7 +458,7 @@ specific WAL it describes; recovery must not truncate based on an unverified bou
 
 **GitLab:** [#158](https://gitlab.com/devnw/zig/wal/-/issues/158)
 
-### SEC-0045: Checkpoint integrity is CRC-32 only (forgeable); encryption_key never mixed in (Medium, Score 24) — **Open**
+### SEC-0045: Checkpoint integrity is CRC-32 only (forgeable); encryption_key never mixed in (Medium, Score 24) — **Closed** (87f4785)
 
 **Evidence:** `src/checkpoint.zig:79` — `writeCheckpoint` stores `Crc32IsoHdlc.hash(buf[0..24])`.
 `src/checkpoint.zig:99-102` — `readCheckpoint` validates only that the stored CRC-32 matches the
@@ -466,7 +482,7 @@ material is available, not a non-cryptographic checksum.
 
 **GitLab:** [#159](https://gitlab.com/devnw/zig/wal/-/issues/159)
 
-### SEC-0046: Incremental recovery trusts prefix [0, valid_end) without re-validating head records (Medium, Score 24, umbrella for SEC-0044/0045) — **Open**
+### SEC-0046: Incremental recovery trusts prefix [0, valid_end) without re-validating head records (Medium, Score 24, umbrella for SEC-0044/0045) — **Closed** (87f4785)
 
 **Evidence:** `src/recovery.zig:112-178` — `recoverFromWithKey` calls
 `record.FileSource.initAt(file, start.valid_end)` and scans forward only; records in `[0, valid_end)` are
@@ -490,7 +506,7 @@ boundary is verified against a validated record.
 
 **GitLab:** [#160](https://gitlab.com/devnw/zig/wal/-/issues/160)
 
-### SEC-0047: Stale-sidecar deletion after compact/truncateAfter swallows all errors (Low, Score 16) — **Open**
+### SEC-0047: Stale-sidecar deletion after compact/truncateAfter swallows all errors (Low, Score 16) — **Closed** (87f4785)
 
 **Evidence:** `src/wal.zig:753-756` (post-compact) and `src/wal.zig:837-840` (post-truncateAfter) call
 `checkpoint_mod.deleteCheckpoint` with no error handling; `src/checkpoint.zig:114-117` —
@@ -511,7 +527,7 @@ observable.
 
 **GitLab:** [#161](https://gitlab.com/devnw/zig/wal/-/issues/161)
 
-### SEC-0048: Iterator holds no lock for its lifetime; concurrent in-place truncateAfter yields non-atomic reads (Low, Score 16) — **Open**
+### SEC-0048: Iterator holds no lock for its lifetime; concurrent in-place truncateAfter yields non-atomic reads (Low, Score 16) — **Closed** (5c2006a)
 
 **Evidence:** `src/wal.zig:875-877` — `iterator()` acquires the shared lock only to snapshot `enc_key`,
 then `unlockShared` before returning; the `Iterator` carries an independent file handle but no lock.
@@ -534,7 +550,7 @@ explicitly note `compact()` is safe; `zig build check` passes.
 
 **GitLab:** [#162](https://gitlab.com/devnw/zig/wal/-/issues/162)
 
-### SEC-0049: sync_diamond_deps.py parse_target lacks format validation on tref/tcommit (Low, Score 8) — **Open**
+### SEC-0049: sync_diamond_deps.py parse_target lacks format validation on tref/tcommit (Low, Score 8) — **Closed** (0df088b)
 
 **Evidence:** `scripts/sync_diamond_deps.py:353-356` — `parse_target` splits on `=` then `#` and returns
 `(name, ref, commit)` with no validation; `~line 368` interpolates `tref`/`tcommit` directly into a fetch
@@ -554,7 +570,7 @@ that input against a strict format.
 
 **GitLab:** [#163](https://gitlab.com/devnw/zig/wal/-/issues/163)
 
-### SEC-0050: .gitignore missing **pycache**/ and *.py[co] (Info, Score 8) — **Open**
+### SEC-0050: .gitignore missing **pycache**/ and *.py[co] (Info, Score 8) — **Closed** (164043d)
 
 **Evidence:** `.gitignore` has no `__pycache__/`/`*.pyc`/`*.py[co]` entry; `git status --ignored` shows
 `?? scripts/__pycache__/` (untracked, not ignored); `scripts/__pycache__/detect_diamond_deps.cpython-313.pyc`
@@ -571,7 +587,7 @@ is present on disk.
 
 **GitLab:** [#164](https://gitlab.com/devnw/zig/wal/-/issues/164)
 
-### SEC-0051: AAD binds record framing but not log position (Info, Score 8) — **Open**
+### SEC-0051: AAD binds record framing but not log position (Info, Score 8) — **Closed** (5c2006a)
 
 **Evidence:** `src/encryption.zig:269` — `const aad = buf[OFF_BLOB_LEN..OFF_NONCE];` (= `blob_len` +
 magic, 12 bytes). The record LSN and on-disk offset are not in the AAD, so the AEAD tag does not bind a
@@ -593,7 +609,7 @@ site.
 
 **GitLab:** [#165](https://gitlab.com/devnw/zig/wal/-/issues/165)
 
-### SEC-0052: Vendored protoc binary is 0777 in zig-pkg/ local cache (Info, Score 8) — **Open**
+### SEC-0052: Vendored protoc binary is 0777 in zig-pkg/ local cache (Info, Score 8) — **Closed** (0df088b)
 
 **Evidence:** `zig-pkg/N-V-__8AAGKbngAmNuaBMSXq_WgmQi6N8WVWVKp0moFSTvoJ/bin/protoc` is mode `rwxrwxrwx`
 (0777). `git check-ignore zig-pkg` confirms `zig-pkg` is git-ignored — the binary is NOT tracked in the
@@ -634,16 +650,16 @@ severity findings.
 
 | Gap-ID | Severity | Finding | Component | GitLab | Status |
 |--------|----------|---------|-----------|--------|--------|
-| SEC-0041 | Medium | `truncateAfter` skips CRC/AEAD verification, LSN monotonicity, and misreads encrypted framing | `wal.zig` | [#139](https://gitlab.com/devnw/zig/wal/-/issues/139) | **Open** |
-| SEC-0042 | Medium | otel dependency `?ref=v0.1.10` pins a commit that resolves to otel-0.1.9 | `build.zig.zon` | [#140](https://gitlab.com/devnw/zig/wal/-/issues/140) | **Open** |
-| SEC-0043 | Low | `truncateAfter` corrupt-header guard checks only `payload_len`, not full record size | `wal.zig` | [#141](https://gitlab.com/devnw/zig/wal/-/issues/141) | **Open** |
-| QA-0069 | Low | `deinit` hardcodes `record_count = 0` in checkpoint | `wal.zig` | [#142](https://gitlab.com/devnw/zig/wal/-/issues/142) | **Open** |
-| QA-0070 | Low | `loadKeyFromEnv` thread-safety caveat not documented | `encryption.zig` | [#143](https://gitlab.com/devnw/zig/wal/-/issues/143) | **Open** |
-| QA-0071 | Info | Two misleading code comments (overlap threshold, blob_buf lifecycle) | `encryption.zig` / `iterator.zig` | [#144](https://gitlab.com/devnw/zig/wal/-/issues/144) | **Open** |
-| QA-0072 | Info | CLAUDE.md wrong RwLock type and stale test count | `CLAUDE.md` | [#145](https://gitlab.com/devnw/zig/wal/-/issues/145) | **Open** |
-| QA-0073 | Info | GAP_ANALYSIS_RESOLVED.md GAP-0003 cites non-existent test names | `docs/GAP_ANALYSIS_RESOLVED.md` | [#146](https://gitlab.com/devnw/zig/wal/-/issues/146) | **Open** |
+| SEC-0041 | Medium | `truncateAfter` skips CRC/AEAD verification, LSN monotonicity, and misreads encrypted framing | `wal.zig` | [#139](https://gitlab.com/devnw/zig/wal/-/issues/139) | **Closed** |
+| SEC-0042 | Medium | otel dependency `?ref=v0.1.10` pins a commit that resolves to otel-0.1.9 | `build.zig.zon` | [#140](https://gitlab.com/devnw/zig/wal/-/issues/140) | **Open/Deferred** |
+| SEC-0043 | Low | `truncateAfter` corrupt-header guard checks only `payload_len`, not full record size | `wal.zig` | [#141](https://gitlab.com/devnw/zig/wal/-/issues/141) | **Closed** |
+| QA-0069 | Low | `deinit` hardcodes `record_count = 0` in checkpoint | `wal.zig` | [#142](https://gitlab.com/devnw/zig/wal/-/issues/142) | **Closed** |
+| QA-0070 | Low | `loadKeyFromEnv` thread-safety caveat not documented | `encryption.zig` | [#143](https://gitlab.com/devnw/zig/wal/-/issues/143) | **Closed** |
+| QA-0071 | Info | Two misleading code comments (overlap threshold, blob_buf lifecycle) | `encryption.zig` / `iterator.zig` | [#144](https://gitlab.com/devnw/zig/wal/-/issues/144) | **Closed** |
+| QA-0072 | Info | CLAUDE.md wrong RwLock type and stale test count | `CLAUDE.md` | [#145](https://gitlab.com/devnw/zig/wal/-/issues/145) | **Closed** |
+| QA-0073 | Info | GAP_ANALYSIS_RESOLVED.md GAP-0003 cites non-existent test names | `docs/GAP_ANALYSIS_RESOLVED.md` | [#146](https://gitlab.com/devnw/zig/wal/-/issues/146) | **Closed** |
 
-### SEC-0041: truncateAfter skips CRC/AEAD verification, LSN monotonicity, and misreads encrypted-record framing (Medium) — **Open**
+### SEC-0041: truncateAfter skips CRC/AEAD verification, LSN monotonicity, and misreads encrypted-record framing (Medium) — **Closed** (d89e336)
 
 **Evidence:** `src/wal.zig:805-825` — the bespoke scan reads raw `[0..8]` as the LSN regardless of
 the encryption key. For encrypted WALs, the layout at those bytes is `blob_len`+magic, not an LSN,
@@ -669,7 +685,7 @@ parse encrypted record framing.
 
 **GitLab:** [#139](https://gitlab.com/devnw/zig/wal/-/issues/139)
 
-### SEC-0042: otel dependency ?ref=v0.1.10 in build.zig.zon pins a commit that resolves to otel-0.1.9 (Medium) — **Open**
+### SEC-0042: otel dependency ?ref=v0.1.10 in build.zig.zon pins a commit that resolves to otel-0.1.9 (Medium) — **Open/Deferred** (requires upstream otel re-release)
 
 **Evidence:** `build.zig.zon:12-13` — `.url = "...otel.git?ref=v0.1.10#a1afbfe..."` but
 `.hash = "otel-0.1.9-B0v3..."`. The content hash version prefix `0.1.9` contradicts the `v0.1.10`
@@ -689,7 +705,7 @@ the same upstream version.
 
 **GitLab:** [#140](https://gitlab.com/devnw/zig/wal/-/issues/140)
 
-### SEC-0043: truncateAfter corrupt-header guard checks only payload_len, not full record size (Low, dependent on SEC-0041) — **Open**
+### SEC-0043: truncateAfter corrupt-header guard checks only payload_len, not full record size (Low, dependent on SEC-0041) — **Closed** (d89e336)
 
 **Evidence:** `src/wal.zig:813` — `if (payload_len > record.MAX_RECORD_SIZE) break;` versus the
 full-record-size check at `src/iterator.zig:159`
@@ -708,7 +724,7 @@ scan eliminates this. Tracked as dependent on **SEC-0041** ([#139](https://gitla
 
 **GitLab:** [#141](https://gitlab.com/devnw/zig/wal/-/issues/141)
 
-### QA-0069: deinit hardcodes record_count = 0 in checkpoint, structurally incorrect for non-empty WAL (Low) — **Open**
+### QA-0069: deinit hardcodes record_count = 0 in checkpoint, structurally incorrect for non-empty WAL (Low) — **Closed** (5c2006a)
 
 **Evidence:** `src/wal.zig:304` — `.record_count = 0, // record_count not tracked by WAL`. A
 recovery mitigation at `src/recovery.zig:120-122` seeds `record_count = 1` when
@@ -730,7 +746,7 @@ unused/always-zero fields must be removed to avoid hidden coupling.
 
 **GitLab:** [#142](https://gitlab.com/devnw/zig/wal/-/issues/142)
 
-### QA-0070: loadKeyFromEnv uses std.c.getenv — thread-safety caveat not documented (Low) — **Open**
+### QA-0070: loadKeyFromEnv uses std.c.getenv — thread-safety caveat not documented (Low) — **Closed** (5c2006a)
 
 **Evidence:** `src/encryption.zig:478` — `std.c.getenv(...)`. The doc comment at
 `src/encryption.zig:468-471` documents environ residency but omits the thread-safety caveat.
@@ -751,7 +767,7 @@ constraint.
 
 **GitLab:** [#143](https://gitlab.com/devnw/zig/wal/-/issues/143)
 
-### QA-0071: Two misleading code comments — encryption overlap threshold and iterator blob_buf lifecycle (Info) — **Open**
+### QA-0071: Two misleading code comments — encryption overlap threshold and iterator blob_buf lifecycle (Info) — **Closed** (5c2006a)
 
 **Evidence:** (1) `src/encryption.zig:444` comment says "payloads >24 bytes" for the overlap
 threshold; `OFF_CIPHERTEXT = 40` so the correct threshold is >40 bytes. (2) `src/iterator.zig:141`
@@ -771,7 +787,7 @@ passes.
 
 **GitLab:** [#144](https://gitlab.com/devnw/zig/wal/-/issues/144)
 
-### QA-0072: CLAUDE.md states wrong RwLock type and stale test count (Info) — **Open**
+### QA-0072: CLAUDE.md states wrong RwLock type and stale test count (Info) — **Closed** (164043d+1dfd246)
 
 **Evidence:** `CLAUDE.md:72` says `std.Thread.RwLock`; the actual primitive is `std.Io.RwLock`
 (`src/wal.zig:793` uses `lockUncancelable(std.Io.Threaded.global_single_threaded.io())`).
@@ -792,7 +808,7 @@ primitive and test inventory.
 
 **GitLab:** [#145](https://gitlab.com/devnw/zig/wal/-/issues/145)
 
-### QA-0073: GAP_ANALYSIS_RESOLVED.md GAP-0003 names tests that no longer exist under those names (Info) — **Open**
+### QA-0073: GAP_ANALYSIS_RESOLVED.md GAP-0003 names tests that no longer exist under those names (Info) — **Closed** (0df088b)
 
 **Evidence:** `docs/GAP_ANALYSIS_RESOLVED.md:36-39` — the GAP-0003 resolution cites test names
 "encryption: mixed plaintext then encrypted WAL migration" and "encryption: compaction of mixed

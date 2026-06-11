@@ -1111,3 +1111,44 @@ raising SEC-0041 to `priority::high`.
 - 0 Critical or High severity findings in any review.
 
 See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table and issue links.
+
+---
+
+## Review 17 Closure (branch audit-closure-2026-06-11)
+
+> **Date:** 2026-06-11
+> **Scope:** Closure of all SEC findings from Reviews 15-16 that were implemented on
+> branch audit-closure-2026-06-11. SEC-0042 deferred (upstream dependency).
+> **Baseline:** 129 unit (+ 1 skip) + 39 integration tests pass; appsec/quality/perf
+> re-reviews clean.
+
+### Closed Findings
+
+| Gap-ID | GitLab | Commit | Resolution Summary |
+|--------|--------|--------|--------------------|
+| SEC-0041 | [#139](https://gitlab.com/devnw/zig/wal/-/issues/139) | d89e336 | `truncateAfter` routed through validated recovery scan (CRC/AEAD + LSN monotonicity) |
+| SEC-0043 | [#141](https://gitlab.com/devnw/zig/wal/-/issues/141) | d89e336 | Full-record-size bound enforced (subsumed by SEC-0041 fix) |
+| SEC-0044 | [#158](https://gitlab.com/devnw/zig/wal/-/issues/158) | 87f4785 | Checkpoint cross-WAL/stale boundary rejection implemented |
+| SEC-0045 | [#159](https://gitlab.com/devnw/zig/wal/-/issues/159) | 87f4785 | Checkpoint authenticated by last-record re-validation (AEAD for encrypted) |
+| SEC-0046 | [#160](https://gitlab.com/devnw/zig/wal/-/issues/160) | 87f4785 | Incremental recovery prefix re-validation via `validateCheckpointBoundary` |
+| SEC-0047 | [#161](https://gitlab.com/devnw/zig/wal/-/issues/161) | 87f4785 | `deleteCheckpoint` logs real (non-FileNotFound) failures |
+| SEC-0048 | [#162](https://gitlab.com/devnw/zig/wal/-/issues/162) | 5c2006a | Iterator snapshot semantics documented at `iterator()` and `Iterator` |
+| SEC-0049 | [#163](https://gitlab.com/devnw/zig/wal/-/issues/163) | 0df088b | `parse_target` format validation for tref/tcommit added |
+| SEC-0050 | [#164](https://gitlab.com/devnw/zig/wal/-/issues/164) | 164043d | `.gitignore` `__pycache__/` and `*.py[cod]` patterns added |
+| SEC-0051 | [#165](https://gitlab.com/devnw/zig/wal/-/issues/165) | 5c2006a | AAD-vs-position defense-in-depth comment added at `encryption.zig:269` |
+| SEC-0052 | [#166](https://gitlab.com/devnw/zig/wal/-/issues/166) | 0df088b | Protoc 0777 cache hygiene documented in developer setup notes |
+
+### Deferred Finding
+
+| Gap-ID | GitLab | Reason |
+|--------|--------|--------|
+| SEC-0042 | [#140](https://gitlab.com/devnw/zig/wal/-/issues/140) | `otel` `?ref=v0.1.10` resolves to otel-0.1.9 internal version; requires upstream otel to bump its internal `.version` and re-tag — out of scope for this library-only branch. Will close when otel cuts a new release with aligned ref+hash. |
+
+### Cumulative Status (Post-Review 17 Closure)
+
+- 52 total security findings across Reviews 1-16.
+- **51 closed**; 1 Open/Deferred (SEC-0042); 2 Won't Do (SEC-0014, SEC-0016).
+- 0 Critical or High severity findings in any review.
+- 129 unit (+ 1 skip) + 39 integration + 4 fuzz tests pass at all 4 optimization levels.
+
+See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table and issue links.
