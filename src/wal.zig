@@ -349,7 +349,14 @@ pub const WriteAheadLog = struct {
             checkpoint_mod.writeCheckpoint(self.dir, self.filename, .{
                 .last_lsn = self.current_lsn,
                 .valid_end = self.file_end,
-                .record_count = 0, // record_count not tracked by WAL; checkpoint serves as position hint
+                // record_count is intentionally not tracked by the WAL and MUST
+                // NOT be trusted for integrity (QA-0069). Checkpoint soundness is
+                // established by re-validating the last-record boundary on load
+                // (last_record_start + last_lsn + CRC/AEAD, SEC-0044/0046), and the
+                // monotonicity baseline is seeded defensively in recoverFrom* when
+                // record_count is 0 but last_lsn > 0 (SEC NEW-1). The field is kept
+                // only for on-disk format stability.
+                .record_count = 0,
                 .last_record_start = self.last_record_start,
             }) catch {};
         }
@@ -967,6 +974,20 @@ pub const WriteAheadLog = struct {
     /// The iterator uses an independent file handle so it does not disturb the
     /// write position.  Call `Iterator.deinit` when done.
     /// Thread-safe: acquires shared lock briefly to snapshot configuration (PAR-0005).
+    ///
+    /// **Consistency (SEC-0048):** the returned `Iterator` does NOT hold the
+    /// WAL lock for its lifetime — it reads its own file handle positionally and
+    /// only the brief snapshot above is locked. Concurrent `append` (extends the
+    /// file) and `truncateAfter` (shrinks the live inode in place) are therefore
+    /// NOT serialized against an in-flight iteration: a record visible on one
+    /// `next()` may be gone on the next, and records appended after the iterator
+    /// was created may or may not be observed. This is memory-safe — the kernel
+    /// serializes `read` against `ftruncate`, and short/torn reads return a clean
+    /// `null` stop — but it is not a point-in-time snapshot. A concurrent
+    /// `compact` is unaffected: it swaps in a new inode via rename, so the
+    /// iterator's open handle keeps reading the original (now-unlinked) file to
+    /// completion. If you need read-during-mutate consistency, coordinate
+    /// externally (e.g. drain iterators before truncating).
     pub fn iterator(self: *WriteAheadLog, from_lsn: u64) !Iterator {
         self.mu.lockSharedUncancelable(std.Io.Threaded.global_single_threaded.io());
         const enc_key = if (self.options.encryption_key) |k| k else null;

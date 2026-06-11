@@ -137,8 +137,11 @@ pub const Iterator = struct {
                 const e = entry.?;
 
                 if (e.lsn <= self.from_lsn) {
-                    // Skipped record — payload was not duped (PERF-0012),
-                    // blob_buf already secureZero'd+freed inside readEncryptedEntry.
+                    // Skipped record — payload was not duped (PERF-0012). The
+                    // reusable blob buffer is NOT freed here; it is retained for
+                    // the next record and secureZero'd + freed once in deinit
+                    // (PERF-0020). The skipped Entry carries an empty payload, so
+                    // there is nothing to free for it.
                     continue;
                 }
                 return e;

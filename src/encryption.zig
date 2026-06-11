@@ -264,6 +264,13 @@ pub fn encryptRecord(
 
     // Encrypt in-place into the ciphertext region; write tag at OFF_TAG.
     // AAD = blob_len + magic (12 bytes) — binds framing metadata to the tag (SEC-0001).
+    // NOTE (SEC-0051): the AAD intentionally does NOT bind the record's file
+    // position, so a local attacker with raw file-write access could splice or
+    // reorder whole authenticated records. That is defended one layer up: the
+    // inner record carries its LSN and recovery enforces strict LSN monotonicity
+    // (recovery.zig, SEC-0022), which rejects any duplicated or out-of-order
+    // record on replay. Binding the LSN into the AAD would be format-breaking and
+    // is not done.
     var tag: [TAG_SIZE]u8 = undefined;
     const ct = buf[OFF_CIPHERTEXT..][0..plaintext.len];
     const aad = buf[OFF_BLOB_LEN..OFF_NONCE];
@@ -441,9 +448,13 @@ pub fn decryptRecordInPlace(
     const ciphertext_start = OFF_CIPHERTEXT;
     const plaintext_len = blob.len - ENCRYPTION_OVERHEAD;
 
-    // Decrypt into the front of blob. For payloads >24 bytes the destination
-    // overlaps the ciphertext source, but source is always ahead of destination
-    // (offset 40 vs 0) so sequential block processing is safe (SEC-0003).
+    // Decrypt into the front of blob. The destination [0, plaintext_len) overlaps
+    // the ciphertext source [OFF_CIPHERTEXT, OFF_CIPHERTEXT+plaintext_len) whenever
+    // plaintext_len > OFF_CIPHERTEXT (i.e. blob.len > 2*ENCRYPTION_OVERHEAD = 80),
+    // but the source always starts OFF_CIPHERTEXT (40) bytes AHEAD of the
+    // destination, and AES-GCM is counter mode processed low-to-high, so each
+    // source byte is consumed before the destination write reaches it — in-place
+    // decryption is safe (SEC-0003).
     Aes256Gcm.decrypt(blob[0..plaintext_len], blob[ciphertext_start..][0..plaintext_len], tag, &aad, nonce, key.*) catch {
         return error.DecryptionFailed;
     };
@@ -465,10 +476,18 @@ pub fn isEncrypted(buf: []const u8) bool {
 /// - `error.InvalidKey` if the value is present but not exactly 64 hex digits.
 /// - A `[32]u8` key on success.
 ///
-/// **Note:** `std.c.getenv` returns a pointer into the process environment
-/// block, so the hex-encoded key string persists in memory for the lifetime of
-/// the process. Callers who require minimal key exposure should clear the
-/// environment variable after loading (e.g., via `unsetenv`).
+/// **Key-exposure note:** `std.c.getenv` returns a pointer into the process
+/// environment block, so the hex-encoded key string persists in memory for the
+/// lifetime of the process. Callers who require minimal key exposure should
+/// clear the environment variable after loading (e.g., via `unsetenv`).
+///
+/// **Thread-safety note (QA-0070/SEC-0005):** `getenv` is NOT safe to call
+/// concurrently with `setenv`/`putenv`/`unsetenv` on another thread — the
+/// returned pointer can be invalidated mid-read, yielding a torn or dangling
+/// string. Load the key once during single-threaded startup, before spawning
+/// any thread that may mutate the environment. For a fully non-`environ` path,
+/// decode the key yourself (e.g. from a KMS, file, or secret store) and pass it
+/// directly via `Options.encryption_key`.
 pub fn loadKeyFromEnv(env_var: []const u8) EncryptionError!?[32]u8 {
     // env_var must be null-terminated for the C getenv call.
     var name_buf: [256]u8 = undefined;
