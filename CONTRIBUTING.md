@@ -13,6 +13,12 @@ make pre-commit-install
 make dev
 ```
 
+> **Note on `zig-pkg/`:** Zig extracts fetched dependencies (including a vendored
+> `protoc` binary) into the git-ignored `zig-pkg/` cache, sometimes with
+> world-writable (`0777`) permissions. Treat it as a local build cache only — do
+> not place it on a shared or multi-user filesystem, and never execute binaries
+> from it on an untrusted host (SEC-0052).
+
 ## Reporting Bugs
 
 Before submitting a bug report:

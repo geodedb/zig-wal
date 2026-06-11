@@ -33,10 +33,20 @@
 - **GitLab issue:** [#3](https://gitlab.com/devnw/zig/wal/-/issues/3) (Closed)
 - **Category:** Test
 - **Severity:** Medium
-- **Resolution:** Fixed. Added 2 integration tests in `tests/scenarios/encryption.zig`:
-  1. `encryption: mixed plaintext then encrypted WAL migration` — writes 3 plaintext, reopens with key, writes 2 encrypted, verifies all 5 readable.
-  2. `encryption: compaction of mixed plaintext/encrypted WAL` — writes 2 plaintext + 2 encrypted, compacts at LSN 2, verifies only encrypted records remain.
-- **Evidence:** `zig build test-integration --summary all` — 18/18 tests pass.
+- **Resolution:** Fixed, then superseded by the SEC-0038 hardening. The original
+  fix added "mixed plaintext/encrypted WAL migration" tests, but SEC-0038 later
+  changed the policy: when an `encryption_key` is configured, recovery, iteration,
+  and compaction **reject** any plaintext record rather than silently mixing
+  formats (to prevent plaintext injection into an encrypted WAL). The mixed-WAL
+  migration tests were therefore replaced by the current rejection tests in
+  `tests/scenarios/encryption.zig` (QA-0073 corrects the stale names below):
+  1. `encryption: plaintext records rejected when reopened with key (SEC-0038)`
+     — writes plaintext, reopens with a key, and asserts recovery rejects the
+     plaintext records.
+  2. `encryption: compaction rejects plaintext records with key (SEC-0038)`
+     — asserts compaction on a keyed WAL rejects plaintext records.
+- **Evidence:** `zig build test-integration --summary all` passes; see the
+  current SEC-0038 tests in `tests/scenarios/encryption.zig`.
 
 ---
 

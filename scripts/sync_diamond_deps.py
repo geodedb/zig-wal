@@ -350,10 +350,33 @@ class Bumped:
     url_with_ref: str
 
 
+# Accepted shapes for a --target spec's components (SEC-0049). These values
+# flow into `git commit -m` messages and `zig fetch <url-with-ref>` URLs, so we
+# reject anything that isn't a plain semver-ish tag and a 40-hex commit before
+# they reach subprocess argv. subprocess is always called with a list (no
+# shell), so this is defense-in-depth against argv/commit-message pollution and
+# fetch-URL redirection, not a shell-injection fix.
+_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_REF_RE = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
+_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
 def parse_target(spec: str) -> tuple[str, str, str]:
     # tls=v0.1.9#<commit>
+    if "=" not in spec or "#" not in spec:
+        raise ValueError(f"invalid --target {spec!r}: expected '<name>=<ref>#<commit>'")
     name, rest = spec.split("=", 1)
     ref, commit = rest.split("#", 1)
+    if not _NAME_RE.match(name):
+        raise ValueError(f"invalid --target name {name!r}")
+    if not _REF_RE.match(ref):
+        raise ValueError(
+            f"invalid --target ref {ref!r}: expected a semver tag like 'v0.1.9'"
+        )
+    if not _COMMIT_RE.match(commit):
+        raise ValueError(
+            f"invalid --target commit {commit!r}: expected a 40-char hex SHA"
+        )
     return name, ref, commit
 
 
