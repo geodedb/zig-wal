@@ -18,6 +18,10 @@ const encryption = @import("encryption.zig");
 const checkpoint_mod = @import("checkpoint.zig");
 const observability = @import("observability");
 
+/// Scoped logger for the WAL engine. Used to surface startup data loss
+/// (recovery truncation) that would otherwise be silent (QA-0079).
+const wal_log = std.log.scoped(.wal);
+
 // ============================================================================
 // Options
 // ============================================================================
@@ -272,8 +276,24 @@ pub const WriteAheadLog = struct {
         }
         replay_ok = true;
 
+        // Surface startup data loss: if recovery stopped before the physical
+        // end of file, trailing records were discarded (torn write, CRC/AEAD
+        // failure, or non-monotonic LSN). Silent truncation makes this
+        // undiagnosable, so log the byte delta at warn level (QA-0079).
+        const recovery_io = std.Io.Threaded.global_single_threaded.io();
+        if (file.stat(recovery_io)) |st| {
+            if (st.size > info.valid_end) {
+                wal_log.warn(
+                    "recovery of '{s}' discarded {d} trailing byte(s) beyond the last valid record " ++
+                        "(kept {d} record(s) up to LSN {d}; valid_end={d}, file size was {d}); " ++
+                        "likely a torn write, CRC/AEAD failure, or non-monotonic LSN",
+                    .{ filename, st.size - info.valid_end, info.record_count, info.last_lsn, info.valid_end, st.size },
+                );
+            }
+        } else |_| {}
+
         // Truncate any bytes beyond the last valid record (torn writes, etc.).
-        try file.setLength(std.Io.Threaded.global_single_threaded.io(), info.valid_end);
+        try file.setLength(recovery_io, info.valid_end);
 
         // Position cursor at the write tail for streaming writes.
         _ = std.c.lseek(file.handle, @intCast(info.valid_end), 0);
