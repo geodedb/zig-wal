@@ -5,12 +5,12 @@
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .thread_pool = .{
-            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git#39528a3e92212efab8ed5840bc20e619a419c0f5",
-            .hash = "thread_pool-0.2.4-11B1BnyUdgCUNlqgBwHNvE4plLwP1s1MAyCjODPafrpo",
+            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.5#d45eb0a772f7c017aae088bfdd11164525362777",
+            .hash = "thread_pool-0.2.5-11B1BomFeQCd1mA9ZE-IdwArqRfiDhA1nGKvjLwpMjkw",
         },
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.8#a43c52592c3c131019fed264da8d8c532c23a531",
-            .hash = "otel-0.1.7-B0v3lvwMNADEHMtQzsmbCvC6qxWxlBtVcpdTX-Wb5BnV",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.10#a1afbfe672d5c0894969d0aa49efa7a66510eda3",
+            .hash = "otel-0.1.9-B0v3ltxeNgB4mGDRS7r1dapusir8f7_ISb-MvzYltW1h",
             .lazy = true,
         },
     },
