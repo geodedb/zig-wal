@@ -403,9 +403,23 @@ pub const WriteAheadLog = struct {
 
     /// Internal unlocked implementation of appendWithLsn.
     /// Caller must hold `self.mu`.
+    /// Reject a payload whose on-disk record would exceed `MAX_RECORD_SIZE` —
+    /// the same limit the recovery and iterator read paths enforce. Without this
+    /// the write path is asymmetric with the read path: a caller could append a
+    /// record that recovery silently rejects and truncates on the next open, and
+    /// the batch allocator would size an unbounded contiguous buffer (PERF-0033).
+    /// The bound accounts for AES-256-GCM framing overhead when encryption is on.
+    fn checkWritable(self: *const WriteAheadLog, payload_len: usize) !void {
+        const overhead = record.HEADER_SIZE + record.CRC_SIZE +
+            (if (self.options.encryption_key != null) encryption.ENCRYPTION_OVERHEAD else 0);
+        // Subtraction-form bound avoids any overflow in HEADER+payload+CRC(+40).
+        if (payload_len > record.MAX_RECORD_SIZE - overhead) return error.RecordTooLarge;
+    }
+
     fn appendWithLsnLocked(self: *WriteAheadLog, lsn: u64, payload: []const u8) !u64 {
         if (self.poisoned) return error.WalPoisoned;
         if (lsn <= self.current_lsn) return error.InvalidLsn;
+        try self.checkWritable(payload.len);
 
         // Record file position before write so we can truncate on error (SEC-0030).
         const pre_write_pos = self.file_end;
@@ -525,6 +539,12 @@ pub const WriteAheadLog = struct {
             if (lsn <= prev_lsn) return error.InvalidLsn;
             prev_lsn = lsn;
         }
+
+        // Reject any oversize record before allocating the batch buffer, keeping
+        // the write path symmetric with recovery and bounding the allocation
+        // (PERF-0033). Validate all payloads up front so a bad record fails the
+        // whole batch atomically rather than mid-serialization.
+        for (payloads) |payload| try self.checkWritable(payload.len);
 
         // Compute total buffer size needed for all records (PERF-0002).
         var total_size: usize = 0;
@@ -2244,4 +2264,78 @@ test "truncateAfter: encrypted round-trip survives reopen (SEC-0041)" {
         count += 1;
     }
     try std.testing.expectEqual(@as(u64, 4), count);
+}
+
+// ---------------------------------------------------------------------------
+// Write-side record-size cap tests (PERF-0033)
+//
+// The write path must reject any payload whose on-disk record would exceed
+// MAX_RECORD_SIZE — the exact limit the recovery/iterator read paths enforce.
+// Without this, a caller could write a record that recovery later silently
+// rejects and truncates (a write/read asymmetry and an unbounded-allocation
+// hazard).
+// ---------------------------------------------------------------------------
+
+test "append: rejects payload exceeding MAX_RECORD_SIZE (PERF-0033)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "toobig.wal", .{ .manual_sync = true });
+    defer wal.deinit();
+
+    // A payload whose record overflows the 16 MiB cap must be rejected up front.
+    const big = try allocator.alloc(u8, record.MAX_RECORD_SIZE);
+    defer allocator.free(big);
+    @memset(big, 0xAB);
+    try std.testing.expectError(error.RecordTooLarge, wal.append(big));
+    try std.testing.expectError(error.RecordTooLarge, wal.appendWithLsn(1, big));
+    try std.testing.expectEqual(@as(u64, 0), wal.currentLsn());
+
+    // The exact plaintext maximum payload is accepted and survives recovery.
+    const max_payload = record.MAX_RECORD_SIZE - record.HEADER_SIZE - record.CRC_SIZE;
+    const ok_buf = try allocator.alloc(u8, max_payload);
+    defer allocator.free(ok_buf);
+    @memset(ok_buf, 0xCD);
+    _ = try wal.append(ok_buf);
+    try wal.sync();
+    try std.testing.expectEqual(@as(u64, 1), wal.currentLsn());
+}
+
+test "appendBatch: rejects oversize payload before allocating (PERF-0033)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "batchbig.wal", .{ .manual_sync = true });
+    defer wal.deinit();
+
+    const big = try allocator.alloc(u8, record.MAX_RECORD_SIZE);
+    defer allocator.free(big);
+    @memset(big, 0x11);
+    const payloads = [_][]const u8{ "ok", big, "also-ok" };
+    try std.testing.expectError(error.RecordTooLarge, wal.appendBatch(&payloads));
+    // Nothing should have been written.
+    try std.testing.expectEqual(@as(u64, 0), wal.currentLsn());
+}
+
+test "append: encrypted record-size limit accounts for AEAD overhead (PERF-0033)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const key = [_]u8{0x5A} ** 32;
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "encbig.wal", .{
+        .manual_sync = true,
+        .encryption_key = key,
+    });
+    defer wal.deinit();
+
+    // A payload that just fits the PLAINTEXT limit overflows the cap once the
+    // 40-byte encryption overhead is added — must be rejected on an encrypted WAL.
+    const plain_max = record.MAX_RECORD_SIZE - record.HEADER_SIZE - record.CRC_SIZE;
+    const buf = try allocator.alloc(u8, plain_max);
+    defer allocator.free(buf);
+    @memset(buf, 0x22);
+    try std.testing.expectError(error.RecordTooLarge, wal.append(buf));
 }
