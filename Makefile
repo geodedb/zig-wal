@@ -17,6 +17,11 @@ build:
 	@echo "🔨 Building wal..."
 	@zig build
 
+# Compile the example (guards against API drift in examples/basic.zig, QA-0077)
+example:
+	@echo "🔧 Building example..."
+	@zig build example
+
 # Run all tests
 test: test-unit test-integration
 	@echo "✅ All tests completed"
@@ -31,28 +36,30 @@ test-integration:
 	@echo "🔗 Running integration tests..."
 	@zig build test-integration --summary all
 
-# Run basic performance benchmarks
+# Run basic performance benchmarks.
+# -Doptimize=ReleaseFast also compiles the deps (thread_pool) optimized; the
+# WAL module itself is already forced to ReleaseFast in build.zig (PERF-0031).
 bench:
 	@echo "Running benchmarks..."
-	@zig build bench
+	@zig build bench -Doptimize=ReleaseFast
 
 # Run multi-tier scale benchmarks (JSON to stdout, table to stderr)
 scale-bench:
-	@zig build scale-bench 2>/dev/null
+	@zig build scale-bench -Doptimize=ReleaseFast 2>/dev/null
 
 # Run scale benchmarks and save results to bench/results/<git-sha>.json
 bench-save:
-	@zig build scale-bench 2>/dev/null > bench/results/$$(git rev-parse --short HEAD).json
+	@zig build scale-bench -Doptimize=ReleaseFast 2>/dev/null > bench/results/$$(git rev-parse --short HEAD).json
 	@echo "Saved to bench/results/$$(git rev-parse --short HEAD).json"
 
 # Save current results as the new accepted baseline
 bench-baseline:
-	@zig build scale-bench 2>/dev/null > bench/results/baseline.json
+	@zig build scale-bench -Doptimize=ReleaseFast 2>/dev/null > bench/results/baseline.json
 	@echo "Saved to bench/results/baseline.json"
 
 # Run scale benchmarks and compare against baseline (exit 1 on regression)
 bench-compare:
-	@zig build scale-bench 2>/dev/null > /tmp/wal-current-bench.json
+	@zig build scale-bench -Doptimize=ReleaseFast 2>/dev/null > /tmp/wal-current-bench.json
 	@zig build compare-bench -- bench/results/baseline.json /tmp/wal-current-bench.json
 
 # Clean build artifacts
@@ -75,7 +82,7 @@ dev: fmt check test-unit
 	@echo "✅ Development checks passed"
 
 # Full CI pipeline (clean slate)
-ci: clean build test
+ci: clean build example test
 	@echo "✅ CI pipeline passed"
 
 # Release optimization level tests

@@ -90,6 +90,9 @@ build:
     - *install-zig
   script:
     - zig build check
+    # Compile the public example so API drift in examples/basic.zig fails CI
+    # rather than rotting silently (QA-0077).
+    - zig build example
 
 # Unit tests
 test:

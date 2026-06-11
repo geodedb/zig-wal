@@ -67,6 +67,6 @@ pub fn main() !void {
     log.deinit();
 
     // Clean up the demo file.
-    cwd.deleteFile("demo.wal") catch {};
+    cwd.deleteFile(std.Io.Threaded.global_single_threaded.io(), "demo.wal") catch {};
     std.debug.print("\nDone.\n", .{});
 }

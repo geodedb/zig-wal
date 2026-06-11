@@ -56,13 +56,12 @@ const std = @import("std");
 const wal = @import("wal");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Open or create a WAL (takes a directory handle + filename)
-    var dir = try std.fs.cwd().openDir("data", .{});
-    defer dir.close();
+    // init takes a std.Io.Dir handle + filename (not a path string).
+    const dir = std.Io.Dir.cwd();
 
     var log = try wal.WriteAheadLog.init(allocator, dir, "my-app.wal", .{});
     defer log.deinit();
@@ -74,7 +73,8 @@ pub fn main() !void {
     // Iterate records
     var iter = try log.iterator(0);
     defer iter.deinit();
-    while (try iter.next()) |*entry| {
+    while (true) {
+        var entry = try iter.next() orelse break;
         defer entry.deinit();
         std.debug.print("LSN={d} payload={s}\n", .{ entry.lsn, entry.payload });
     }
@@ -83,6 +83,9 @@ pub fn main() !void {
     try log.compact(lsn1);
 }
 ```
+
+A complete, compile-checked version of this program lives in
+[`examples/basic.zig`](examples/basic.zig) (built in CI via `zig build example`).
 
 ### With Encryption
 

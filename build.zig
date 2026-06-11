@@ -154,6 +154,29 @@ pub fn build(b: *std.Build) void {
     const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
     fuzz_step.dependOn(&run_fuzz_tests.step);
 
+    // Dedicated ReleaseFast build of the WAL module for benchmarks (PERF-0031).
+    // The bench executables are ReleaseFast, but the top-level `module` they
+    // would otherwise import is built at the build's `optimize` (Debug by
+    // default), so `zig build bench` without -Doptimize measured an unoptimized,
+    // safety-checked library — local numbers ran 3-10x slow vs CI. This module
+    // forces the measured library code to ReleaseFast regardless of how the
+    // bench step is invoked. It reuses the existing shared dep module instances
+    // (build_options/observability/thread_pool) to avoid re-running loadDeps,
+    // which would re-emit build_options and trip Zig's "one file, two modules"
+    // dedup guard.
+    const bench_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = allocImports(b, &.{
+            .{ .name = "thread_pool", .module = deps.thread_pool_mod },
+            .{ .name = "observability", .module = deps.observability_mod },
+            .{ .name = "build_options", .module = deps.build_options_mod },
+        }),
+    });
+    if (deps.observability_init_mod) |init_mod| bench_module.addImport("observability_init", init_mod);
+    if (deps.otel_mod) |otel_mod| bench_module.addImport("otel", otel_mod);
+
     // Benchmark executable
     const bench_step = b.step("bench", "Run performance benchmarks");
     const bench_exe = b.addExecutable(.{
@@ -164,7 +187,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
             .link_libc = true,
             .imports = allocImports(b, &.{
-                .{ .name = "wal", .module = module },
+                .{ .name = "wal", .module = bench_module },
             }),
         }),
     });
@@ -181,7 +204,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseFast,
             .link_libc = true,
             .imports = allocImports(b, &.{
-                .{ .name = "wal", .module = module },
+                .{ .name = "wal", .module = bench_module },
                 .{ .name = "thread_pool", .module = deps.thread_pool_mod },
             }),
         }),

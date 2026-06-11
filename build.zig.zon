@@ -2,7 +2,7 @@
     .name = .wal,
     .version = "0.1.4",
     .fingerprint = 0x961dd052a6eaa312,
-    .minimum_zig_version = "0.15.1",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .thread_pool = .{
             .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.5#d45eb0a772f7c017aae088bfdd11164525362777",

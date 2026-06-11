@@ -21,17 +21,20 @@
 //! semantic conventions.
 
 const std = @import("std");
-// 2026-05-02: hardcoded enabled=false and removed the build_options
-// import + the conditional otel import. The previous pattern surfaced
-// a Zig 0.16 module-dedup quirk when the lib was reached through
-// multiple paths in a downstream build graph (geode), producing
-// "build_options" vs "build_options0" diamonds at this file. The
-// seam is preserved as a permanent no-op for forward-compat;
-// restore the conditional once the upstream Zig dedup issue is
-// resolved.
-pub const enabled: bool = false;
+// The seam tracks `build_options.with_otel`. build.zig shares a SINGLE
+// `build_options` module instance across every consumer (see loadDeps:
+// `build_options_mod`), which is the build-graph fix for the Zig 0.16
+// module-dedup quirk that previously produced "build_options" vs
+// "build_options0" diamonds when this file was reached through multiple
+// paths in a downstream graph (geode). With that sharing in place the
+// source-level hardcoded-`false` workaround (2026-05-02) is redundant and
+// has been removed so `-Dwith_otel=true` actually compiles in the otel
+// instrumentation (QA-0073/QA-0075). When off (the default), every helper
+// collapses to a comptime no-op and the otel dependency is never resolved.
+const build_options = @import("build_options");
+pub const enabled: bool = build_options.with_otel;
 
-const otel = struct {};
+const otel = if (enabled) @import("otel") else struct {};
 
 /// Opaque handle for an in-flight operation. When disabled, this is a
 /// zero-sized struct the optimizer drops entirely. The no-op fallback's
