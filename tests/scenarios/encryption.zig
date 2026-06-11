@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024-2025 CodePros
+// Copyright (c) 2024-2026 CodePros
 
 //! Encryption scenario tests: verify AES-256-GCM lifecycle, ciphertext
 //! opacity, and batch behaviour under encryption.

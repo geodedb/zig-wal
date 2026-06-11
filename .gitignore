@@ -61,5 +61,9 @@ coverage/
 # Package cache
 zig-pkg/
 
+# Python bytecode (scripts/)
+__pycache__/
+*.py[cod]
+
 # Local git worktrees (per-feature isolated checkouts)
 .worktrees/

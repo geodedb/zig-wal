@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 zig build                # Build library
-zig build test           # Unit tests (110 tests across 9 modules)
-zig build test-integration  # Integration + scenario tests (25 tests)
+zig build test           # Unit tests (116 pass + 1 skip across 11 modules)
+zig build test-integration  # Integration + scenario tests (39 tests)
 zig build check          # Fast syntax check (no codegen, good for IDE)
 
 make dev                 # Quick iteration: fmt + check + unit tests
@@ -38,7 +38,9 @@ root.zig (public API re-exports)
         ├── compaction.zig (bulk-copy above LSN watermark, zero-copy on Linux)
         ├── encryption.zig (AES-256-GCM per-record encrypt/decrypt, readEncryptedBlob)
         ├── checkpoint.zig (recovery checkpoint sidecar for O(1) startup)
-        └── atomic.zig (temp+fsync+rename file writes)
+        ├── atomic.zig (temp+fsync+rename file writes)
+        ├── observability.zig (OpenTelemetry seam — comptime no-op when disabled)
+        └── observability_init.zig (OTel bootstrap helper — compiled only with -Dwith_otel=true)
 ```
 
 `wal.zig` is the only module that imports all others. Lower modules are independent of each other.
@@ -65,11 +67,11 @@ Overhead: 40 bytes. Detection: peek 12 bytes, check for magic at offset 4.
 
 ## Key Conventions
 
-- `// SPDX-License-Identifier: Apache-2.0` + `// Copyright (c) 2024-2025 CodePros` on all source files
-- Zig 0.15.1+ — uses unmanaged container APIs (allocator passed to every method)
+- `// SPDX-License-Identifier: Apache-2.0` + `// Copyright (c) 2024-2026 CodePros` on all source files
+- Zig 0.16.0+ — uses unmanaged container APIs (allocator passed to every method) and the `std.Io` interfaces (`std.Io.File`, `std.Io.Dir`, `std.Io.RwLock`)
 - CRC variant: `std.hash.crc.Crc32IsoHdlc`
 - Crypto: `std.crypto.aead.aes_gcm.Aes256Gcm`
-- Thread-safe: internal `std.Thread.RwLock` (exclusive for writes, shared for reads)
+- Thread-safe: internal `std.Io.RwLock` (exclusive for writes, shared for reads)
 - Optional `thread-pool` for parallel batch serialization (PAR-0002)
 - No global/singleton state — everything is instance-based
 - Unit tests colocated in source files; integration/scenario tests in `tests/`

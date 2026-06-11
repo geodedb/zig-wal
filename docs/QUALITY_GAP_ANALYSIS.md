@@ -3,23 +3,81 @@
 > **Source of truth:** [GitLab Issues](https://gitlab.com/devnw/zig/wal/-/issues?label_name%5B%5D=quality)
 > filtered by label `quality`. This file mirrors findings status.
 >
-> **Last updated:** 2026-03-22 (Gap closure — QA-0067, QA-0068 closed)
+> **Last updated:** 2026-06-11 (Review 7 — QA-0074–QA-0084 opened)
 
 ## Summary
 
-**68 findings** across 9 categories from six comprehensive code-quality, maintainability, and performance reviews.
+**79 findings** across 10 categories from seven comprehensive code-quality, maintainability, and performance reviews.
 
 | Metric | Count |
 |--------|-------|
-| Total findings | 68 |
+| Total findings | 79 |
 | Critical severity | 0 |
-| High severity | 11 |
-| Medium severity | 35 |
-| Low severity | 22 |
-| Confirmed | 67 |
+| High severity | 13 |
+| Medium severity | 39 |
+| Low severity | 27 |
+| Confirmed | 78 |
 | Suspected | 1 |
-| Open | 0 |
+| Open | 11 |
 | Closed | 68 |
+
+## Stack-Ranked Findings (Review 7 — Open)
+
+PriorityScore = Impact(1–5) × Likelihood(1–5) × 4. Max = 100.
+
+| # | ID | Score | Severity | Category | Confidence | Title | File(s) | Issue | Status |
+|---|-----|-------|----------|----------|------------|-------|---------|-------|--------|
+| 1 | QA-0074 | 60 | High | CI/CD | Confirmed | build.zig.zon minimum_zig_version="0.15.1" but code requires Zig 0.16 (std.Io.*) | build.zig.zon:5, README.md:4 | [#147](https://gitlab.com/devnw/zig/wal/-/issues/147) | Open |
+| 2 | QA-0075 | 48 | High | Maintainability | Confirmed | observability seam hardcodes enabled=false; -Dwith_otel=true fails its own test and the seam is dead | src/observability.zig:33, tests/observability_disabled_test.zig:25 | [#148](https://gitlab.com/devnw/zig/wal/-/issues/148) | Open |
+| 3 | QA-0076 | 36 | Medium | CI/CD | Confirmed | pre-commit run --all-files fails — unstaged auto-fixes, 6× MD040 bare fences, 13× MD029 numbering | CONTRIBUTING.md:48, .gitlab/issue_templates/Bug Report.md:44, docs/superpowers/plans/2026-03-21-wal-library.md:15,37,67,1533, docs/SECURITY_REVIEW_NOTES.md | [#149](https://gitlab.com/devnw/zig/wal/-/issues/149) | Open |
+| 4 | QA-0077 | 36 | Medium | CI/CD | Confirmed | examples/basic.zig does not compile; example absent from CI; README Quick Start uses 0.15 idioms | examples/basic.zig:70, Makefile, .gitlab-ci.yml, README.md | [#150](https://gitlab.com/devnw/zig/wal/-/issues/150) | Open |
+| 5 | QA-0078 | 36 | Medium | Documentation | Confirmed | README claims "Zero dependencies" but build.zig.zon declares thread_pool (required) + otel (lazy) | README.md:22, build.zig.zon | [#151](https://gitlab.com/devnw/zig/wal/-/issues/151) | Open |
+| 6 | QA-0079 | 36 | Medium | Maintainability | Confirmed | Silent recovery truncation — no std.log anywhere in src/; startup data loss undiagnosable | recovery.zig:160,166,227-234, wal.zig:276 | [#152](https://gitlab.com/devnw/zig/wal/-/issues/152) | Open |
+| 7 | QA-0080 | 8 | Low | Maintainability | Confirmed | Timer + BenchTmpDir duplicated verbatim across bench entry points | bench/main.zig:20-75, bench/scale_bench.zig:27-82 | [#153](https://gitlab.com/devnw/zig/wal/-/issues/153) | Open |
+| 8 | QA-0081 | 4 | Low | Documentation | Confirmed | Copyright headers say 2024-2025 in all 24 .zig files; current year is 2026 | All 24 .zig files | [#154](https://gitlab.com/devnw/zig/wal/-/issues/154) | Open |
+| 9 | QA-0082 | 8 | Low | Documentation | Confirmed | QA-0055 Won't-Fix rationale claims 3-4 levels nesting; actual is 5-6 | docs/QUALITY_GAP_ANALYSIS.md (Review 4), iterator.zig:105-195 | [#155](https://gitlab.com/devnw/zig/wal/-/issues/155) | Open |
+| 10 | QA-0083 | 8 | Low | Cleanup | Confirmed | Dead `_ = std.c.lseek(...)` at compaction.zig:294; both copy paths are positional | compaction.zig:294 | [#156](https://gitlab.com/devnw/zig/wal/-/issues/156) | Open |
+| 11 | QA-0084 | 4 | Low | Readability | Confirmed | Sequential encrypted batch tail-scratch aliasing is correct but uncommented | wal.zig:646-648 (cf. encryption.zig:444-446) | [#157](https://gitlab.com/devnw/zig/wal/-/issues/157) | Open |
+
+### Review 7 Findings by Category
+
+- **CI/CD (3):** QA-0074 (min Zig version), QA-0076 (pre-commit failures), QA-0077 (uncompiled/broken example).
+- **Maintainability (2):** QA-0075 (dead otel seam), QA-0079 (silent truncation, no logging).
+- **Documentation (3):** QA-0078 (false "zero dependencies"), QA-0081 (stale copyright year), QA-0082 (incorrect QA-0055 Won't-Fix rationale).
+- **Cleanup (1):** QA-0083 (dead lseek).
+- **Readability (1):** QA-0084 (uncommented intentional aliasing).
+
+### Review 7 Roadmap
+
+- **Quick wins (< 1 day):** QA-0074 (bump min Zig version), QA-0078 (fix README dependency claim), QA-0081 (copyright year), QA-0082 (amend rationale), QA-0083 (delete dead lseek), QA-0084 (add aliasing comment), QA-0080 (extract bench_common.zig).
+- **Medium (1–5 days):** QA-0075 (restore otel conditional + verify under -Dwith_otel; file geode dedup tracking note), QA-0076 (fix pre-commit: fences, MD029, ruff/cz auto-fixes), QA-0077 (repair example, wire `zig build example` into CI, fix README snippet), QA-0079 (add std.log.warn on truncation + test).
+- **Strategic (> 5 days):** none — all Review 7 findings are bounded.
+
+### Review 7 Methodology
+
+**Manual review:** Phase 3 quality-reviewer agent re-audited build/CI configuration, documentation accuracy,
+the observability seam, recovery diagnosability, and bench duplication, with empirical verification of the
+otel build-flag behavior (restoring `enabled = build_options.with_otel` passes 115/117, 2 skip) and the
+encrypted `truncateAfter` data-loss reproduction. All findings cross-referenced against existing issues
+(QA-0001–QA-0073, SEC-0041–SEC-0043) to avoid duplicates.
+
+**Numbering note:** This review's internal numbering originally collided with the gap-pipeline IDs
+QA-0069–QA-0073 (GitLab #142–#146, created the same day for unrelated appsec/docs items). The quality
+findings were therefore **renumbered to start at QA-0074** to preserve global ID uniqueness. The mapping
+from internal numbers to final IDs is: QA-0069→QA-0074, QA-0073→QA-0075, QA-0074→QA-0076, QA-0078→QA-0077,
+QA-0079→QA-0078, QA-0080→QA-0079, QA-0075→QA-0080, QA-0076→QA-0081, QA-0081→QA-0082, QA-0082→QA-0083,
+QA-0083→QA-0084.
+
+**Comment-only updates (no new issue — folded into existing tracking):**
+
+- **CLAUDE.md/README documentation drift** → consolidated onto **#145 (QA-0072)** via a scope comment.
+  Full scope: CLAUDE.md:9,10,32-41,69,72 (counts 117 unit / 39 integration, 11 modules, `std.Io.RwLock`)
+  plus README:4 (Zig badge) and README:189 (stale counts). The `build.zig.zon` `minimum_zig_version`
+  companion is tracked separately as QA-0074 (#147).
+- **truncateAfter encrypted data-loss** (internally QA-0077) → root cause already tracked as
+  **SEC-0041 (#139)**. Added an empirical-reproduction comment (encrypted WAL LSNs 1,2,3 +
+  `truncateAfter(2)` → entire file truncated to 0 bytes, no error) and a **severity-escalation
+  rationale (High — silent data loss, reviewer-reproduced)** rather than opening a duplicate.
 
 ## Stack-Ranked Findings (Review 6 — Closed)
 
@@ -35,6 +93,7 @@ PriorityScore = Impact(1-5) x Likelihood(1-5) x 4. Max = 100.
 2 findings: both implemented and closed.
 
 **Implemented:**
+
 - **QA-0068**: Corrected README to state that `appendBatch()` respects `sync_every_n` and `manual_sync` (same as `append()`), not "always syncs at the end"
 - **QA-0067**: `WriteAheadLog.filename` now stores an owned copy (`allocator.dupe`) freed in `deinit()`, with `errdefer` cleanup in `init()`. Added unit test proving safety after caller frees the original slice. 80/80 unit tests pass (was 79).
 
@@ -79,6 +138,7 @@ PriorityScore = Impact(1–5) × Likelihood(1–5) × 4. Max = 100.
 7 findings: all 7 implemented and closed.
 
 **Implemented:**
+
 - **QA-0060**: Added 4 Makefile targets (`test-fuzz`, `test-debug`, `security-scan`, `release`) for CI parity
 - **QA-0061**: Replaced `page_allocator` with `GeneralPurposeAllocator` and `/tmp` with `"data"` dir in README Quick Start
 - **QA-0062**: Added "Durability Configuration" section to README documenting `sync_every_n` and `manual_sync`
@@ -94,6 +154,7 @@ PriorityScore = Impact(1–5) × Likelihood(1–5) × 4. Max = 100.
 **Manual review:** Four parallel analysis agents covering readability/naming, CI/CD/build, test quality/documentation, and performance/memory. All findings cross-referenced against existing 59 issues (QA-0001–QA-0059) to avoid duplicates.
 
 **Triaged during this review:**
+
 - appendBatch encrypted buffer overlap (performance agent): Same false positive as SEC Reviews 2, 7, 12, 13 — already in Triaged False Positives section
 - Recovery/compaction unbuffered I/O (performance agent): Evaluated and rejected in PERF Review 5 — infrequent operations, not worth buffering complexity
 - Entry.deinit() on skipped iterator records (test agent): Skipped entries never reach caller; freeing an empty slice is a no-op
@@ -122,18 +183,20 @@ PriorityScore = Impact(1–5) × Likelihood(1–5) × 4. Max = 100.
 10 findings: 7 implemented and closed, 3 closed as Won't Fix.
 
 **Implemented:**
+
 - **QA-0052**: Swapped 3 function signatures + ~48 call sites to allocator-first parameter ordering
 - **QA-0053**: Documented internal/unstable API surface in root.zig with convenience re-exports
 - **QA-0054**: Deduplicated test_key — defined in encryption.zig, imported elsewhere
 - **QA-0056**: Extracted shared TMP_NAME_BUF_SIZE constant from atomic.zig
 - **QA-0057**: Updated stale test counts in CLAUDE.md (79 unit, 25 integration)
 - **QA-0058**: Added test-fuzz CI job in .gitlab-ci.yml
-- **QA-0059**: Prefixed Iterator private fields with underscore (_file, _done, _reuse_buf, _io_buf, _file_reader)
+- **QA-0059**: Prefixed Iterator private fields with underscore (_file,_done, _reuse_buf, _io_buf, _file_reader)
 
 **Won't Fix (with architectural justification):**
+
 - **QA-0050**: Scan loops share structural similarity but have fundamentally different semantics (recovery validates CRC, compaction skips CRC, iterator uses BufferedSource). Extracting a shared abstraction would violate "lower modules are independent" architecture and add coupling.
 - **QA-0051**: Long functions are orchestrator functions whose length comes from inherent algorithmic complexity. Internal helpers already extracted where sensible.
-- **QA-0055**: Re-measured nesting is 3-4 levels, within the max-4 coding style guideline.
+- **QA-0055**: Accepted on cost grounds, not on guideline conformance. Re-measured (QA-0082, #155) the actual nesting in `iterator.next()` and `recovery.recoverWithKey()` is **5-6 indent levels**, driven by the error-classification `catch`-`switch` inside the encrypted-record branch — it exceeds the max-4 style guideline. Refactoring (e.g. extracting the encrypted-record arm into a helper) would reach ≤4 but is deferred; the prior "3-4 levels, within guideline" note was an inaccurate measurement and is corrected here.
 
 ## Stack-Ranked Findings (Review 3 — Closed)
 
@@ -220,8 +283,8 @@ The following were flagged during review but confirmed as not-issues:
 | Total source lines (src/) | ~3,870 (includes colocated unit tests) |
 | Total test lines (tests/ + bench/) | ~1,540 |
 | Test-to-source ratio | 0.40 |
-| Unit tests | 99 passing |
-| Integration + scenario tests | 25 passing |
+| Unit tests | 117 passing (per Review 7; verify with `zig build test`) |
+| Integration + scenario tests | 39 passing (per Review 7) |
 | Largest file | `wal.zig` (~966 lines) |
-| Modules | 9 (root, wal, record, recovery, compaction, encryption, atomic, iterator, checkpoint) |
+| Modules | 11 (root, wal, record, recovery, compaction, encryption, atomic, iterator, checkpoint, observability, observability_init) |
 | Modules with zero unit tests | 0 |

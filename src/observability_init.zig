@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024-2025 CodePros
+// Copyright (c) 2024-2026 CodePros
 
 //! observability_init.zig — bootstrap helper. Only compiled when
 //! `build_options.with_otel == true` (gated at the importer site by

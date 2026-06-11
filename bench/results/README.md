@@ -48,6 +48,7 @@ make bench-compare         # Compare current run against baseline
 ## Regression Detection
 
 Default threshold: 20%. A metric FAILs if:
+
 - **Throughput** (higher is better): decreases by more than threshold
 - **Latency** (lower is better): increases by more than threshold
 

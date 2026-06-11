@@ -154,6 +154,7 @@ The following security domains are not relevant to this library:
 ### Positive Observations — Review 3
 
 All Review 1 & 2 remediations verified in-place:
+
 - **AAD authentication** — blob_len + magic used as AAD in all encrypt/decrypt paths
 - **Key zeroization** — secureZero in WAL.deinit, Iterator.deinit, loadKeyFromEnv errdefer
 - **Plaintext zeroization** — stack and heap buffers in encryptAndWriteToFile properly zeroed
@@ -166,6 +167,7 @@ All Review 1 & 2 remediations verified in-place:
 ### Key Observations
 
 The 5 new findings are all Info severity. The codebase has strong security posture for a library of this nature:
+
 - Zero external dependencies eliminates supply chain risk
 - All prior Critical/High/Medium findings have been remediated
 - The remaining gaps are defense-in-depth hardening items
@@ -234,6 +236,7 @@ See `docs/GAP_ANALYSIS.md` for full details and GitLab issue links.
 ### Positive Observations — Review 4
 
 All Reviews 1-3 remediations verified in-place and functioning correctly:
+
 - SEC-0001 AAD authentication: `blob_len + magic` used as AAD in all 4 encrypt/decrypt paths
 - SEC-0002 Key zeroization: `secureZero` in WAL.deinit, Iterator.deinit, loadKeyFromEnv errdefer
 - SEC-0009/0019 Plaintext zeroization: stack/heap buffers in encryptAndWriteToFile and appendBatch properly zeroed
@@ -247,6 +250,7 @@ All Reviews 1-3 remediations verified in-place and functioning correctly:
 ### Key Observations
 
 The 5 new findings are all Info/Low severity. After 4 adversarial reviews and 28 total findings, the codebase has a strong security posture:
+
 - Zero Critical or High findings in any review
 - 21 of 23 actionable findings remediated and closed
 - Remaining 5 findings (Review 4) are defense-in-depth hardening items
@@ -309,6 +313,7 @@ See `docs/GAP_ANALYSIS.md` for full details and GitLab issue links.
 ### Positive Observations — Review 5
 
 All Reviews 1-4 remediations verified in-place and functioning correctly:
+
 - SEC-0001 AAD authentication: `blob_len + magic` used as AAD in all encrypt/decrypt paths
 - SEC-0002 Key zeroization: `secureZero` in WAL.deinit, Iterator.deinit, loadKeyFromEnv errdefer
 - SEC-0009/0019/0024 Plaintext zeroization: stack buffers, batch heap buffer, and iterator blob_buf all scrubbed
@@ -323,6 +328,7 @@ All Reviews 1-4 remediations verified in-place and functioning correctly:
 ### Key Observations
 
 The 3 new findings are all Info/Low severity. After 5 adversarial reviews and 31 total findings, the codebase has a strong security posture:
+
 - Zero Critical or High findings in any review
 - 26 of 29 actionable findings remediated and closed
 - 2 Won't Do (CI/CD concerns handled via separate controls)
@@ -384,6 +390,7 @@ See `docs/GAP_ANALYSIS.md` for full details and GitLab issue links.
 ### Positive Observations — Review 6
 
 All Reviews 1-5 remediations verified in-place and functioning correctly:
+
 - SEC-0001 AAD authentication: verified in all encrypt/decrypt paths
 - SEC-0002 Key zeroization: verified in WAL.deinit, Iterator.deinit, loadKeyFromEnv
 - SEC-0009/0019/0024/0029 Plaintext zeroization: all paths verified (encryption stack, batch heap, iterator, recovery, compaction)
@@ -398,6 +405,7 @@ All Reviews 1-5 remediations verified in-place and functioning correctly:
 ### Key Observations
 
 After 6 adversarial reviews and 32 total findings, the codebase has a strong security posture:
+
 - Zero Critical or High findings in any review
 - 30 of 32 findings remediated and closed
 - 2 Won't Do (CI/CD concerns handled via separate controls)
@@ -552,6 +560,7 @@ See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table.
 ### Manual Review Coverage — Review 9
 
 **Cryptographic review:**
+
 - AES-256-GCM nonce generation (random 96-bit), AAD binding (blob_len+magic), tag verification — all correct
 - Key lifecycle: loading (loadKeyFromEnv with errdefer zeroize), storage (Options struct), zeroization (deinit, secureZero), error-path handling — all correct
 - SEC-0033 remediation verified: bounds check before @intCast in both encryptRecord and encryptInto
@@ -559,18 +568,21 @@ See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table.
 - No timing side channels in security-critical comparisons (GCM tag verification delegated to stdlib)
 
 **Memory safety review:**
+
 - All @intCast sites verified: encryption.zig:188/:226 (bounded by SEC-0033 check), :319/:358 (bounded by MAX_RECORD_SIZE), compaction.zig:168 (bounded by MAX_RECORD_SIZE check at :158), record.zig:123 (bounded by MAX_PAYLOAD_SIZE check at :115), wal.zig:275 (u32 cast of slice.len, infeasible to overflow)
 - All allocator patterns (alloc/free/errdefer) verified across all modules — no leaks, double-frees, or UAF
 - All `catch {}` sites are in error-recovery paths (SEC-0005 pre-delete, SEC-0021 best-effort fchmod, SEC-0030 truncation rollback)
 - No `@truncate`, `@bitCast`, or `@ptrCast` in production code (only one `@truncate` in test code)
 
 **DoS / input validation review:**
+
 - All scan loops (recovery, compaction, iterator) have guaranteed termination conditions
 - MAX_RECORD_SIZE enforced at all read-path entry points (7 locations)
 - LSN monotonicity enforced in recovery (SEC-0022)
 - File descriptor leak analysis: all open/close paths balanced (init errdefer, deinit, iterator.deinit, compaction defer). Note: SEC-0035 (double-close in finalize/atomic rename error path) found during extended triage
 
 **CI/CD supply chain review:**
+
 - Pipeline structure: 7 included CI components at semver tags (Won't Do: SHA pinning)
 - SEC-0034 remediation verified: gitleaks allowlist patterns now directory-anchored
 - No secrets in pipeline config, no overprivileged runners, no unprotected artifact paths
@@ -685,6 +697,7 @@ Zig's `std.posix.close` treats EBADF as `unreachable` — UB in ReleaseFast/Rele
 ### Manual Review Coverage — Review 10
 
 **Cryptographic review (agent):**
+
 - AES-256-GCM nonce generation, AAD binding, tag verification — all correct
 - Key lifecycle (loading, storage, zeroization, error paths) — all correct
 - SEC-0033 remediation verified: bounds checks in encryptRecord and encryptInto
@@ -693,6 +706,7 @@ Zig's `std.posix.close` treats EBADF as `unreachable` — UB in ReleaseFast/Rele
 - **New finding:** SEC-0036 (iterator skip-path plaintext not zeroized)
 
 **Memory safety review (agent):**
+
 - All @intCast sites verified safe (bounded by upstream guards or type limits)
 - appendBatch encrypted scratch-region overlap proved safe analytically
 - Stack buffer sizing verified across all modules
@@ -700,6 +714,7 @@ Zig's `std.posix.close` treats EBADF as `unreachable` — UB in ReleaseFast/Rele
 - **New finding:** SEC-0037 (double-close on stale fd when reopenOrPoison fails at openFile after compact closes the fd)
 
 **DoS / input validation review (agent):**
+
 - All scan loops (recovery, compaction, iterator) have guaranteed termination
 - MAX_RECORD_SIZE enforced at all read-path entry points
 - SEC-0035 fix verified in both call sites
@@ -708,6 +723,7 @@ Zig's `std.posix.close` treats EBADF as `unreachable` — UB in ReleaseFast/Rele
 - Encrypted record detection false positive: requires LSN ~5×10^18, unreachable
 
 **CI/CD supply chain review (agent):**
+
 - Zero external Zig dependencies
 - No secrets in pipeline configuration
 - No privileged runners, no deployment stages
@@ -1015,5 +1031,83 @@ confirmed correctly scoped out. No change to Won't Do policy.
 - Three consecutive zero-new-finding reviews (Reviews 12, 13, 14) confirm convergence
 - 99 unit tests + 25 integration/scenario tests + 4 fuzz tests pass at all 4 optimization levels (128 total)
 - Zero external dependencies
+
+See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table and issue links.
+
+## Review 16
+
+> **Date:** 2026-06-11
+> **Reviewer:** Deep adversarial security code-review agent + automated scans
+> **Scope:** Full codebase (checkpoint/recovery integrity, iterator concurrency, AEAD position
+> binding), maintainer tooling (`scripts/sync_diamond_deps.py`), repo + cache hygiene, CI/CD
+> **Baseline:** Post-Review 15 (SEC-0041–SEC-0043, QA-0069–QA-0073 open and tracked)
+
+### Methodology
+
+1. **Deep adversarial review** — Focused on the checkpoint sidecar trust model and incremental
+   recovery, iterator snapshot semantics vs in-place `truncateAfter`, AEAD AAD scope, and
+   maintainer-tooling input validation.
+2. **Automated scans** — repo/cache hygiene (`.gitignore`, vendored binary permissions) and CI/CD
+   component pinning.
+3. **Scoring** — Impact (1-5) x Likelihood (1-5) x 4 = Score (max 100).
+
+### Finding Summary
+
+| Severity | Count | Notes |
+|----------|-------|-------|
+| Critical | 0 | -- |
+| High | 0 | -- |
+| Medium | 3 | SEC-0044, SEC-0045, SEC-0046 (checkpoint/recovery integrity cluster) |
+| Low | 3 | SEC-0047, SEC-0048, SEC-0049 |
+| Info | 3 | SEC-0050, SEC-0051, SEC-0052 |
+| **Total** | **9 new** | All Open, tracked #158–#166 |
+
+### Finding Mapping
+
+| Gap-ID | Severity | Score | Finding | Component | GitLab |
+|--------|----------|-------|---------|-----------|--------|
+| SEC-0044 | Medium | 24 | Cross-WAL/stale checkpoint shifts recovery scan start → silent truncation | `checkpoint.zig` / `recovery.zig` / `wal.zig` | #158 |
+| SEC-0045 | Medium | 24 | Checkpoint integrity is CRC-32 only; `encryption_key` never mixed in | `checkpoint.zig` / `wal.zig` | #159 |
+| SEC-0046 | Medium | 24 | Incremental recovery trusts prefix `[0, valid_end)` without re-validation (umbrella) | `recovery.zig` / `wal.zig` / `checkpoint.zig` | #160 |
+| SEC-0047 | Low | 16 | Stale-sidecar deletion after compact/truncateAfter swallows all errors | `wal.zig` / `checkpoint.zig` | #161 |
+| SEC-0048 | Low | 16 | Iterator holds no lock for lifetime; concurrent in-place truncateAfter non-atomic | `wal.zig` / `iterator.zig` | #162 |
+| SEC-0049 | Low | 8 | `sync_diamond_deps.py` parse_target lacks tref/tcommit validation | `scripts/sync_diamond_deps.py` | #163 |
+| SEC-0050 | Info | 8 | `.gitignore` missing `__pycache__/` and `*.py[co]` | `.gitignore` | #164 |
+| SEC-0051 | Info | 8 | AAD binds record framing but not log position (defense-in-depth) | `encryption.zig` | #165 |
+| SEC-0052 | Info | 8 | Vendored protoc binary is 0777 in `zig-pkg/` local cache (git-ignored) | `zig-pkg/` cache | #166 |
+
+### Checkpoint/Recovery Integrity Cluster (SEC-0044 / SEC-0045 / SEC-0046)
+
+These three share one root: the checkpoint sidecar is trusted to define a truncation boundary but is
+neither bound to the WAL it describes (SEC-0044) nor cryptographically authenticated (SEC-0045, CRC-32
+only, no key mixing), and the incremental scan starts at `recovery.zig` `start.valid_end` and never
+re-validates the `[0, valid_end)` prefix (SEC-0046). The SEC-NEW-3 guard at `wal.zig:243-276` only
+fires when **zero** incremental records are accepted, so a single parsed record past a shifted offset
+leads to `file.setLength(io, info.valid_end)` (`wal.zig:276`) truncating valid data. **SEC-0046 is the
+umbrella**; recommended single remediation: bind+HMAC the checkpoint to WAL identity (key-derived HMAC
+when encrypted) and verify `valid_end` lands on a CRC/AEAD-valid record boundary before trusting the
+prefix. Mitigation present: `options.checkpoint` defaults to `false`.
+
+### Triaged / Deduplicated — Review 16
+
+- **NEW-04 — CI catalog components tag-pinned not SHA-pinned (`.gitlab-ci.yml:9-14`,
+  `security-*@v1.7.1` / `zig-format@v1.2.1` / `sbom-*@v1.7.1` / `release-semantic@v1.7.1`):** Same
+  concern as the established **"CI component SHA pinning" Won't Do** (SEC-0014 family). Previously
+  confirmed as a Won't Do duplicate in Reviews 9, 10, 11, and 12 (see "7 included CI components at
+  semver tags (Won't Do: SHA pinning)"). **No new issue created** — covered by the prior Won't Do.
+
+### Reachability Confirmation — SEC-0041 (#139)
+
+A comment was added to #139 confirming `truncateAfter` is reachable on a hot, safety-critical path:
+`raft/src/file_storage.zig:717` invokes it on every conflicting Raft append (plaintext WAL); zero test
+coverage confirmed; the encrypted-WAL misparse empirically truncates the entire file. Recommended
+raising SEC-0041 to `priority::high`.
+
+### Cumulative Status (Post-Review 16)
+
+- 52 total security findings across 16 reviews (SEC-0001 through SEC-0052).
+- 40 closed; 3 Won't Do (SEC-0014, SEC-0016, + CI component SHA pinning family); SEC-0041–SEC-0052
+  Open (12 open security findings: 3 from Review 15, 9 from Review 16).
+- 0 Critical or High severity findings in any review.
 
 See `docs/GAP_ANALYSIS.md` for the full stack-ranked findings table and issue links.

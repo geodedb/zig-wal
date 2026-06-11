@@ -38,4 +38,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ## Commercial Support
 
-For commercial support inquiries, contact: support@codepros.dev
+For commercial support inquiries, contact: <support@codepros.dev>

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024-2025 CodePros
+// Copyright (c) 2024-2026 CodePros
 
 //! Crash scenario tests: simulate torn writes and on-disk corruption, then
 //! verify that `WriteAheadLog.init` recovers cleanly.

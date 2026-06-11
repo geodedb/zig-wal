@@ -1,25 +1,24 @@
----
 commitizen:
   name: cz_conventional_commits
   tag_format: v$version
   version_scheme: semver
   version_provider: scm
   update_changelog_on_bump: true
-  bump_message: "bump: version $current_version -> $new_version"
+  bump_message: 'bump: version $current_version -> $new_version'
   changelog_incremental: true
   allowed_prefixes:
-    - feat
-    - fix
-    - docs
-    - style
-    - refactor
-    - perf
-    - test
-    - build
-    - ci
-    - chore
-    - revert
-  bump_pattern: "^(feat|fix|perf|refactor)"
+  - feat
+  - fix
+  - docs
+  - style
+  - refactor
+  - perf
+  - test
+  - build
+  - ci
+  - chore
+  - revert
+  bump_pattern: ^(feat|fix|perf|refactor)
   bump_map:
     feat: MINOR
     fix: PATCH

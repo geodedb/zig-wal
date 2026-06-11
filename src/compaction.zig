@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024-2025 CodePros
+// Copyright (c) 2024-2026 CodePros
 
 //! WAL compaction: rewrite the log keeping only records with LSN > watermark.
 //!
@@ -286,12 +286,11 @@ pub fn compact(
     }
 
     // ---- Bulk-copy phase ----------------------------------------------------
-    // Seek source back to the first kept record and stream-copy to temp file.
-    // This phase is format-agnostic: we copy raw bytes regardless of whether
-    // records are encrypted or plaintext.
-
-    // Position source cursor at the first kept record for streaming bulk copy.
-    _ = std.c.lseek(src.handle, @intCast(kept_offset), 0);
+    // Stream-copy the first kept record onward to the temp file. This phase is
+    // format-agnostic: we copy raw bytes regardless of whether records are
+    // encrypted or plaintext. Both copy paths (userSpaceCopy, zeroCopyTransfer)
+    // are fully positional — they read from `kept_offset` directly and never use
+    // the file cursor — so no lseek is required here.
 
     const tmp = try createTempFile(dir, tmp_name);
     errdefer {

@@ -12,7 +12,7 @@
 
 ## File Structure
 
-```
+```text
 src/
 ├── root.zig          # Public API re-exports (modify existing)
 ├── record.zig        # Record framing: serialize, deserialize, CRC (create)
@@ -33,7 +33,8 @@ build.zig              # Add scenario test steps (modify existing)
 ```
 
 **Module dependency graph (compile-time `@import` only):**
-```
+
+```text
 root.zig ──> wal.zig ──> record.zig
                      ──> recovery.zig ──> record.zig
                      ──> compaction.zig ──> record.zig
@@ -43,6 +44,7 @@ root.zig ──> wal.zig ──> record.zig
 ```
 
 **Responsibility boundaries:**
+
 - `record.zig` — Pure functions. Serialize/deserialize record frames. CRC compute/verify. No file I/O.
 - `recovery.zig` — Reads a file handle, scans records, reports last valid position. No file mutation.
 - `compaction.zig` — Reads old file, writes new file, performs atomic swap. Stateless.
@@ -55,12 +57,14 @@ root.zig ──> wal.zig ──> record.zig
 ## Task 1: Record Framing (`src/record.zig`)
 
 **Files:**
+
 - Create: `src/record.zig`
 
 This is the foundation — pure functions for serializing/deserializing WAL records with CRC32 integrity.
 
 **Record format (plaintext):**
-```
+
+```text
 [lsn: u64 LE][payload_len: u32 LE][payload: N bytes][crc32: u32 LE]
 Header: 12 bytes | CRC: 4 bytes | Min record: 16 bytes
 ```
@@ -382,6 +386,7 @@ git commit -m "feat: add record framing module with serialize/deserialize and CR
 ## Task 2: Atomic File Utility (`src/atomic.zig`)
 
 **Files:**
+
 - Create: `src/atomic.zig`
 
 Simple utility: write data to a temp file, fsync, rename over target. Used by compaction and exposed publicly for callers (Raft hard_state, Geode checkpoint).
@@ -494,6 +499,7 @@ git commit -m "feat: add atomic file write utility (temp+fsync+rename)"
 ## Task 3: Recovery Module (`src/recovery.zig`)
 
 **Files:**
+
 - Create: `src/recovery.zig`
 
 Scans a WAL file forward, validates each record's CRC, and returns the position of the last valid record. Used by `wal.zig` during init.
@@ -740,6 +746,7 @@ git commit -m "feat: add crash recovery module with forward scan and CRC validat
 ## Task 4: Core WAL Engine (`src/wal.zig`)
 
 **Files:**
+
 - Create: `src/wal.zig`
 
 Orchestrates record, recovery, and file I/O into the main `WriteAheadLog` struct.
@@ -1163,6 +1170,7 @@ git commit -m "feat: add core WAL engine with init, append, batch, iterator, and
 ## Task 5: Compaction (`src/compaction.zig`)
 
 **Files:**
+
 - Create: `src/compaction.zig`
 
 Rewrites the WAL keeping only records with LSN > watermark. Uses the bulk-copy optimization from Geode: since LSNs are monotonic, once we find the first kept record, everything after it is also kept.
@@ -1421,6 +1429,7 @@ git commit -m "feat: add compaction module with bulk-copy optimization"
 ## Task 6: Wire Compaction into WAL Engine
 
 **Files:**
+
 - Modify: `src/wal.zig`
 
 - [ ] **Step 1: Write failing test — WAL.compact removes old records**
@@ -1467,11 +1476,13 @@ test "compact: removes records and allows continued append" {
 - [ ] **Step 3: Add `compact` method to WriteAheadLog**
 
 Add import at top of `src/wal.zig`:
+
 ```zig
 const compaction = @import("compaction.zig");
 ```
 
 Add inside `WriteAheadLog` struct:
+
 ```zig
     /// Remove all records with LSN <= `up_to_lsn` by rewriting the WAL.
     /// The rewrite is atomic (temp file + fsync + rename).
@@ -1512,12 +1523,14 @@ git commit -m "feat: wire compaction into WAL engine"
 ## Task 7: Encryption Layer (`src/encryption.zig`)
 
 **Files:**
+
 - Create: `src/encryption.zig`
 
 Optional AES-256-GCM per-record encryption. Pure functions, no file I/O.
 
 **Encrypted record format:**
-```
+
+```text
 [blob_len: u32 LE][magic: "ZIGWALE\0" (8)][nonce: (12)][tag: (16)][ciphertext]
 ```
 
@@ -1746,6 +1759,7 @@ git commit -m "feat: add AES-256-GCM encryption layer for WAL records"
 ## Task 8: Integrate Encryption into WAL Engine
 
 **Files:**
+
 - Modify: `src/wal.zig`
 - Modify: `src/recovery.zig`
 
@@ -1791,6 +1805,7 @@ test "encrypted: append and iterate with encryption" {
 - [ ] **Step 3: Modify `wal.zig` append to encrypt when key is set**
 
 Add import:
+
 ```zig
 const encryption = @import("encryption.zig");
 ```
@@ -1798,6 +1813,7 @@ const encryption = @import("encryption.zig");
 Modify `append` method: if `options.encryption_key` is set, serialize the plaintext record to a buffer, encrypt it, and write the encrypted blob. Otherwise, use the existing plaintext path.
 
 The approach:
+
 1. Serialize plaintext record into buffer using `record.serialize`
 2. Encrypt the buffer using `encryption.encryptRecord`
 3. Write the encrypted blob to file
@@ -1839,6 +1855,7 @@ Similarly update `appendBatch`.
 Update `src/recovery.zig` — add import for `encryption` and modify `recover` to accept an optional key. When a key is provided, the scanner detects encrypted records by reading a peek buffer and checking magic bytes.
 
 Add at top of `src/recovery.zig`:
+
 ```zig
 const encryption = @import("encryption.zig");
 ```
@@ -1943,6 +1960,7 @@ pub fn recoverWithKey(allocator: std.mem.Allocator, file: std.fs.File, key: ?*co
 ```
 
 Update `wal.zig` `init` to pass the encryption key to recovery:
+
 ```zig
 const info = if (options.encryption_key) |key|
     try recovery_mod.recoverWithKey(allocator, file, &key)
@@ -1955,11 +1973,13 @@ else
 Add `encryption_key` field to the Iterator struct. Modify `WriteAheadLog.iterator()` to pass the key. Modify `Iterator.next()` to detect and decrypt encrypted records.
 
 Add to Iterator struct:
+
 ```zig
         encryption_key: ?[32]u8,
 ```
 
 Update `WriteAheadLog.iterator()`:
+
 ```zig
     pub fn iterator(self: *WriteAheadLog, from_lsn: u64) !Iterator {
         const read_file = try self.dir.openFile(self.filename, .{ .mode = .read_only });
@@ -2133,6 +2153,7 @@ git commit -m "feat: integrate AES-256-GCM encryption into WAL engine"
 ## Task 9: Public API (`src/root.zig`)
 
 **Files:**
+
 - Modify: `src/root.zig`
 
 Replace the skeleton template with re-exports of the real WAL types.
@@ -2202,6 +2223,7 @@ git commit -m "feat: wire public API re-exports in root.zig"
 ## Task 10: Integration Tests
 
 **Files:**
+
 - Modify: `tests/integration.zig`
 - Modify: `build.zig` (add scenario test steps)
 - Create: `tests/scenarios/crash.zig`
@@ -2698,6 +2720,7 @@ git commit -m "feat: add integration and scenario tests (crash, compaction, encr
 ## Task 11: Final Verification and Cleanup
 
 **Files:**
+
 - All source files for review
 
 - [ ] **Step 1: Run full test suite**
@@ -2713,6 +2736,7 @@ Expected: No changes (or apply formatting fixes)
 - [ ] **Step 3: Verify all files have license headers**
 
 Every `.zig` file must start with:
+
 ```zig
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2024-2025 CodePros

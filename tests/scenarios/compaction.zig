@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024-2025 CodePros
+// Copyright (c) 2024-2026 CodePros
 
 //! Compaction scenario tests: verify that repeated compact cycles, full
 //! compaction, and the bytesSinceCompact counter all behave correctly.

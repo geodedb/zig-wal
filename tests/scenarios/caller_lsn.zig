@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024-2025 CodePros
+// Copyright (c) 2024-2026 CodePros
 
 //! Crash and chaos scenario tests for caller-provided LSN methods
 //! (`appendWithLsn` and `appendBatchWithLsns`).

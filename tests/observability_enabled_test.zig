@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024-2025 CodePros
+// Copyright (c) 2024-2026 CodePros
 
 //! Verifies one wal operation span lands in an in-memory recorder when
 //! `-Dwith_otel=true`. Skips under the disabled build.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright (c) 2024-2025 CodePros
+// Copyright (c) 2024-2026 CodePros
 
 //! Core WAL engine: orchestrates record writing, reading, and crash recovery.
 //!
@@ -643,6 +643,19 @@ pub const WriteAheadLog = struct {
 
                 if (self.options.encryption_key) |*key| {
                     const enc_size = encryption.ENCRYPTION_OVERHEAD + rec_size;
+                    // Serialize the plaintext into a scratch region at the buffer
+                    // tail, then encrypt it into its final position at `offset`.
+                    // For the LAST record this scratch (buf[total_size-rec_size..])
+                    // exactly aliases encryptInto's ciphertext output region. That
+                    // is safe because AES-256-GCM is CTR mode (see encryption.zig
+                    // encryptInto / decryptRecordInPlace, SEC-0003): the keystream
+                    // XOR is applied low-to-high with dst == src, so each byte is
+                    // consumed before it is overwritten. The per-record `+40`
+                    // ENCRYPTION_OVERHEAD guarantees no NON-last record's ciphertext
+                    // write ever reaches a not-yet-serialized record's scratch
+                    // (proven across 200k batch shapes; see PERF-0027 / QA-0084).
+                    // Do NOT reverse the copy direction or share scratch across
+                    // records without re-checking this invariant.
                     const pt_start = total_size - rec_size;
                     record.serializeInto(buf[pt_start..][0..rec_size], lsns[i], payload);
                     encryption.encryptInto(buf[offset..][0..enc_size], key, buf[pt_start..][0..rec_size]);

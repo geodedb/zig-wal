@@ -41,7 +41,7 @@ Any other context about the problem.
 
 ### Logs/Error Messages
 
-```
+```text
 Paste any relevant logs or error messages here
 ```
 

@@ -1,7 +1,7 @@
 # wal
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Zig](https://img.shields.io/badge/Zig-0.15.1+-orange.svg)](https://ziglang.org/)
+[![Zig](https://img.shields.io/badge/Zig-0.16.0+-orange.svg)](https://ziglang.org/)
 
 A generic, payload-agnostic Write-Ahead Log (WAL) engine for Zig. Provides
 crash-safe, CRC-verified, optionally-encrypted append-only record storage with
@@ -20,7 +20,7 @@ Extracted from the shared mechanics of two production WAL implementations:
 - **Atomic compaction** — rewrite-based compaction via temp file + fsync + rename
 - **Optional AES-256-GCM encryption** — per-record encryption with random nonces
 - **LSN ordering** — monotonically increasing log sequence numbers for watermark-based compaction
-- **Zero dependencies** — pure Zig standard library only
+- **No required runtime dependencies** — core engine is pure Zig standard library; the thread-pool integration (parallel batch serialization) and OpenTelemetry observability are optional add-ons
 - **Single-file simplicity** — no segment rotation; one file per WAL instance
 
 ## Installation
@@ -186,7 +186,7 @@ specification, crash safety model, and implementation plan.
 
 ## Requirements
 
-- Zig 0.15.1 or later
+- Zig 0.16.0 or later
 
 ## Building
 

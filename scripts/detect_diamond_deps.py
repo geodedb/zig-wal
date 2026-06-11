@@ -89,6 +89,8 @@ DEP_BLOCK_RE = re.compile(
 )
 URL_RE = re.compile(r'\.url\s*=\s*"(?P<url>[^"]+)"')
 HASH_RE = re.compile(r'\.hash\s*=\s*"(?P<hash>[^"]+)"')
+
+
 # Strip `// ...` line comments BUT NOT when the `//` sits inside a
 # string literal (e.g. inside a `.url = "git+https://..."`).  We walk
 # the text and only strip after we've confirmed we're outside an
@@ -164,7 +166,9 @@ def _parse_dep_entries(deps_block: str) -> List[Tuple[str, str, str | None]]:
     return out
 
 
-def _zon_path_for_hash(project_root: Path, zig_global_cache: Path, pkg_hash: str) -> Path | None:
+def _zon_path_for_hash(
+    project_root: Path, zig_global_cache: Path, pkg_hash: str
+) -> Path | None:
     """Return the cached `build.zig.zon` path for a given package hash,
     or None if neither cache has it.  Zig extracts dependencies into
     `<project>/zig-pkg/<pkg_hash>/` (project-local) and stores tarballs
@@ -180,7 +184,9 @@ def _zon_path_for_hash(project_root: Path, zig_global_cache: Path, pkg_hash: str
     return None
 
 
-def collect_transitive(root_zon: Path, zig_global_cache: Path) -> Dict[str, Set[Tuple[str, str | None]]]:
+def collect_transitive(
+    root_zon: Path, zig_global_cache: Path
+) -> Dict[str, Set[Tuple[str, str | None]]]:
     """Walk the project's dependency graph.  Returns a map
     name -> set of (hash, url) seen across the transitive closure."""
     project_root = root_zon.parent
@@ -207,7 +213,9 @@ def collect_transitive(root_zon: Path, zig_global_cache: Path) -> Dict[str, Set[
     return result
 
 
-def find_diamonds(graph: Dict[str, Set[Tuple[str, str | None]]]) -> List[Tuple[str, List[Tuple[str, str | None]]]]:
+def find_diamonds(
+    graph: Dict[str, Set[Tuple[str, str | None]]],
+) -> List[Tuple[str, List[Tuple[str, str | None]]]]:
     """Return [(name, [(hash, url), ...]), ...] for every package name
     that appears with more than one distinct hash."""
     diamonds: List[Tuple[str, List[Tuple[str, str | None]]]] = []
@@ -221,7 +229,9 @@ def main(argv: List[str]) -> int:
     project_root = Path(argv[1]).resolve() if len(argv) >= 2 else Path.cwd()
     zon = project_root / "build.zig.zon"
     if not zon.exists():
-        print(f"detect-diamond-deps: no build.zig.zon at {project_root}", file=sys.stderr)
+        print(
+            f"detect-diamond-deps: no build.zig.zon at {project_root}", file=sys.stderr
+        )
         return 2
 
     cache_env = os.environ.get("ZIG_GLOBAL_CACHE_DIR")
