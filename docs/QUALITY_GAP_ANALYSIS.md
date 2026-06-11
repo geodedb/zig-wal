@@ -3,27 +3,59 @@
 > **Source of truth:** [GitLab Issues](https://gitlab.com/devnw/zig/wal/-/issues?label_name%5B%5D=quality)
 > filtered by label `quality`. This file mirrors findings status.
 >
-> **Last updated:** 2026-06-11 (Review 7 closure — branch audit-closure-2026-06-11: QA-0074–QA-0084 all Closed)
+> **Last updated:** 2026-06-11 (Review 7 + Review 15 closure — branch audit-closure-2026-06-11: QA-0069–QA-0084 all Closed)
 
 ## Summary
 
-**79 findings** across 10 categories from seven comprehensive code-quality, maintainability, and performance reviews.
+**84 findings** across 10 categories from eight comprehensive code-quality, maintainability, and performance reviews.
 
 | Metric | Count |
 |--------|-------|
-| Total findings | 79 |
+| Total findings | 84 |
 | Critical severity | 0 |
 | High severity | 13 |
 | Medium severity | 39 |
-| Low severity | 27 |
-| Confirmed | 78 |
+| Low severity | 29 |
+| Info severity | 3 |
+| Confirmed | 83 |
 | Suspected | 1 |
 | Open | 0 |
-| Closed | 79 |
+| Closed | 84 |
 
-All Review 7 findings (QA-0074–QA-0084) were implemented, tested, and closed on branch
-`audit-closure-2026-06-11` (129 unit + 1 skip / 39 integration tests pass; appsec/quality/perf
-re-reviews clean). See per-row commit references below.
+All Review 7 findings (QA-0074–QA-0084) and Review 15 findings (QA-0069–QA-0073) were implemented,
+tested, and closed on branch `audit-closure-2026-06-11` (129 unit + 1 skip / 39 integration tests
+pass; appsec/quality/perf re-reviews clean). See per-row commit references below.
+
+## Stack-Ranked Findings (Review 15 — Closed)
+
+PriorityScore = Impact(1–5) × Likelihood(1–5) × 4. Max = 100.
+
+| # | ID | Score | Severity | Category | Confidence | Title | File(s) | Issue | Status |
+|---|-----|-------|----------|----------|------------|-------|---------|-------|--------|
+| 1 | QA-0069 | 8 | Low | Correctness | Confirmed | deinit hardcodes record_count=0 in checkpoint — structurally incorrect for non-empty WAL | wal.zig:304, recovery.zig:120-122 | [#142](https://gitlab.com/devnw/zig/wal/-/issues/142) | Closed (5c2006a) |
+| 2 | QA-0070 | 8 | Low | Documentation | Confirmed | loadKeyFromEnv uses std.c.getenv — thread-safety caveat missing from doc comment | encryption.zig:468-471,478 | [#143](https://gitlab.com/devnw/zig/wal/-/issues/143) | Closed (5c2006a) |
+| 3 | QA-0071 | 4 | Info | Readability | Confirmed | Two misleading code comments: encryption overlap threshold and iterator blob_buf lifecycle | encryption.zig:444, iterator.zig:141 | [#144](https://gitlab.com/devnw/zig/wal/-/issues/144) | Closed (5c2006a) |
+| 4 | QA-0072 | 4 | Info | Documentation | Confirmed | CLAUDE.md states wrong RwLock type (std.Thread.RwLock) and stale test count (110/117) | CLAUDE.md:72,9 | [#145](https://gitlab.com/devnw/zig/wal/-/issues/145) | Closed (164043d+1dfd246) |
+| 5 | QA-0073 | 4 | Info | Documentation | Confirmed | GAP_ANALYSIS_RESOLVED.md GAP-0003 cites test names replaced by SEC-0038 hardening | docs/GAP_ANALYSIS_RESOLVED.md:36-39 | [#146](https://gitlab.com/devnw/zig/wal/-/issues/146) | Closed (0df088b) |
+
+### Review 15 Findings by Category
+
+- **Correctness (1):** QA-0069 (checkpoint record_count hidden coupling).
+- **Documentation (2):** QA-0070 (thread-safety caveat), QA-0072 (CLAUDE.md RwLock type + stale count), QA-0073 (stale GAP-0003 test names).
+- **Readability (1):** QA-0071 (two misleading comments).
+
+### Review 15 Methodology
+
+**Manual review (branch audit-closure-2026-06-11):** Adversarial appsec + quality reviewer re-audited
+the Zig 0.16-era codebase post-SEC-0041 remediation. Focus: documentation accuracy, checkpoint metadata
+correctness, comment accuracy, and stale audit trail references. All 5 findings cross-referenced against
+existing issues (QA-0001–QA-0068, SEC series) to avoid duplicates.
+
+**Note:** These 5 findings were originally catalogued in the security-review audit (GAP_ANALYSIS.md
+Review 15, sec review) and tracked as GitLab issues #142–#146. All were implemented and closed on
+branch `audit-closure-2026-06-11`.
+
+---
 
 ## Stack-Ranked Findings (Review 7 — Closed)
 
@@ -287,7 +319,7 @@ The following were flagged during review but confirmed as not-issues:
 | Total source lines (src/) | ~3,870 (includes colocated unit tests) |
 | Total test lines (tests/ + bench/) | ~1,540 |
 | Test-to-source ratio | 0.40 |
-| Unit tests | 117 passing (per Review 7; verify with `zig build test`) |
+| Unit tests | 129 pass + 1 skip (per branch audit-closure-2026-06-11; verify with `zig build test`) |
 | Integration + scenario tests | 39 passing (per Review 7) |
 | Largest file | `wal.zig` (~966 lines) |
 | Modules | 11 (root, wal, record, recovery, compaction, encryption, atomic, iterator, checkpoint, observability, observability_init) |
