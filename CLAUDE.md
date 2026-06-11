@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 zig build                # Build library
-zig build test           # Unit tests (116 pass + 1 skip across 11 modules)
+zig build test           # Unit tests (129 pass + 1 skip across 11 modules)
 zig build test-integration  # Integration + scenario tests (39 tests)
 zig build check          # Fast syntax check (no codegen, good for IDE)
 

@@ -65,8 +65,10 @@ pub const MAX_PAYLOAD_SIZE: u64 = std.math.maxInt(u32);
 
 /// Maximum on-disk record size accepted during recovery/iteration (16 MiB).
 /// Records larger than this are treated as corrupt to prevent OOM from crafted
-/// WAL files (SEC-0004). This is a defensive limit only; the write path does
-/// not enforce it (callers control their own payload sizes).
+/// WAL files (SEC-0004). The write path enforces the SAME bound up front via
+/// `WriteAheadLog.checkWritable` (PERF-0033) — accounting for the +40-byte AEAD
+/// overhead when encryption is on — so anything writable is always recoverable
+/// (no write/read size asymmetry).
 pub const MAX_RECORD_SIZE: usize = 16 * 1024 * 1024;
 
 // Verify that MAX_RECORD_SIZE + header/CRC overhead fits in usize on all

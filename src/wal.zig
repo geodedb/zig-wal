@@ -895,6 +895,15 @@ pub const WriteAheadLog = struct {
     ///
     /// If `after_lsn` is 0, truncates the entire file (all records removed).
     /// Thread-safe: acquires internal mutex.
+    ///
+    /// Cost: O(records up to `after_lsn`). Since SEC-0041 this scan is fully
+    /// validated (one buffered read + CRC per plaintext record, or read +
+    /// AES-GCM decrypt per encrypted record) rather than the old header-only
+    /// pass, so it does ~2x the syscalls plus per-record CRC/AEAD work. That is
+    /// the deliberate cost of integrity-checked, encryption-correct truncation;
+    /// `truncateAfter` is a control-plane operation (e.g. Raft log-conflict
+    /// truncation), not a per-append hot path, so the constant factor is
+    /// acceptable.
     pub fn truncateAfter(self: *WriteAheadLog, after_lsn: u64) !void {
         const span = observability.startWalSpan("truncate");
         var ok = false;
