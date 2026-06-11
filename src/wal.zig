@@ -266,18 +266,16 @@ pub const WriteAheadLog = struct {
                     else
                         recovery_mod.recoverFrom(allocator, file, start);
                     if (inc) |result| {
-                        // Guard: if incremental recovery found zero new records
-                        // but the file is larger than the checkpoint, the checkpoint
-                        // may point mid-record (forged or corrupt). Fall back to
-                        // full scan rather than trusting the checkpoint's valid_end,
-                        // which would cause init() to truncate valid data (SEC NEW-3).
-                        const stat = try file.stat(std.Io.Threaded.global_single_threaded.io());
-                        if (result.valid_end == ckpt.valid_end and stat.size > ckpt.valid_end) {
-                            break :blk if (options.encryption_key) |*key|
-                                try recovery_mod.recoverWithKey(allocator, file, key)
-                            else
-                                try recovery_mod.recover(allocator, file);
-                        }
+                        // The earlier validateCheckpointBoundary call already
+                        // proved ckpt.valid_end lands on a real, intact record
+                        // boundary in this file, so a forged/mid-record checkpoint
+                        // never reaches here (it forces a full scan above). The
+                        // old SEC-NEW-3 "zero new records but file grew → full
+                        // scan" guard — and its second file.stat() — is therefore
+                        // redundant and was removed (PERF-0025). Any bytes past
+                        // result.valid_end are torn/corrupt and init() correctly
+                        // truncates them. Covered by the "forged boundary is
+                        // rejected" test.
                         break :blk result;
                     } else |_| {
                         // CheckpointStale or other error — fall through to full scan.
@@ -2058,6 +2056,47 @@ test "appendBatch: parallel serialization with encryption (PAR-0002)" {
         count += 1;
     }
     try std.testing.expectEqual(@as(usize, 5), count);
+}
+
+test "appendBatch: encrypted batch with non-uniform payload sizes (PERF-0027)" {
+    // Regression guard for the sequential encrypted-batch tail-scratch aliasing.
+    // The serializer reuses the buffer tail as plaintext scratch; with payloads
+    // of DIFFERENT sizes a buggy scratch layout could corrupt a record. No thread
+    // pool, so this exercises the sequential path. A 200k-shape exhaustive proof
+    // (PERF-0027) showed 0 cross-record overlaps; this pins one concrete mix.
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const key = [_]u8{0x6B} ** 32;
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "enc_nonuniform.wal", .{
+        .manual_sync = true,
+        .encryption_key = key,
+    });
+    defer wal.deinit();
+
+    // Deliberately varied sizes incl. tiny, large, then tiny again (the "huge
+    // middle / huge first" adversarial shapes).
+    var big1: [4096]u8 = undefined;
+    @memset(&big1, 0xA1);
+    var big2: [3000]u8 = undefined;
+    @memset(&big2, 0xB2);
+    const payloads = [_][]const u8{ &big1, "x", &big2, "yz", "", &big1 };
+
+    const last_lsn = try wal.appendBatch(&payloads);
+    try std.testing.expectEqual(@as(u64, 6), last_lsn);
+    try wal.sync();
+
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: usize = 0;
+    while (true) {
+        var entry = try iter.next() orelse break;
+        defer entry.deinit();
+        try std.testing.expectEqualSlices(u8, payloads[count], entry.payload);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 6), count);
 }
 
 test "appendBatchWithLsns: parallel serialization with caller LSNs (PAR-0002)" {

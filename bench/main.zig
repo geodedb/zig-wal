@@ -16,52 +16,10 @@ const wal = @import("wal");
 const record = wal.record;
 const encryption = wal.encryption;
 
-// Zig 0.16 compat: Timer was removed; use monotonic clock directly.
-const Timer = struct {
-    start_ns: i96,
-
-    fn start() error{}!Timer {
-        return .{ .start_ns = nanoTimestamp() };
-    }
-
-    fn read(self: *Timer) u64 {
-        const diff = nanoTimestamp() - self.start_ns;
-        return if (diff > 0) @intCast(diff) else 0;
-    }
-
-    fn nanoTimestamp() i96 {
-        const io = std.Io.Threaded.global_single_threaded.io();
-        return std.Io.Clock.Timestamp.now(io, .real).raw.nanoseconds;
-    }
-};
-
-// Zig 0.16 compat: std.testing.tmpDir asserts builtin.is_test.
-const BenchTmpDir = struct {
-    dir: std.Io.Dir,
-    parent: std.Io.Dir,
-    sub_path: [12]u8,
-
-    fn create() BenchTmpDir {
-        const sio = std.Io.Threaded.global_single_threaded.io();
-        const cwd = std.Io.Dir.cwd();
-        var cache_dir = cwd.createDirPathOpen(sio, ".zig-cache/tmp", .{}) catch
-            @panic("bench: cannot create .zig-cache/tmp");
-        var sub: [12]u8 = undefined;
-        var rng_bytes: [9]u8 = undefined;
-        sio.random(&rng_bytes);
-        _ = std.base64.url_safe.Encoder.encode(&sub, &rng_bytes);
-        const dir = cache_dir.createDirPathOpen(sio, &sub, .{}) catch
-            @panic("bench: cannot create tmp subdir");
-        return .{ .dir = dir, .parent = cache_dir, .sub_path = sub };
-    }
-
-    fn cleanup(self: *BenchTmpDir) void {
-        const sio = std.Io.Threaded.global_single_threaded.io();
-        self.dir.close(sio);
-        self.parent.deleteTree(sio, &self.sub_path) catch {};
-        self.parent.close(sio);
-    }
-};
+// Shared timer + temp-dir helpers (QA-0080).
+const bench_common = @import("bench_common.zig");
+const Timer = bench_common.Timer;
+const BenchTmpDir = bench_common.BenchTmpDir;
 
 const WARM_UP = 50;
 
