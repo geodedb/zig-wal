@@ -807,43 +807,34 @@ pub const WriteAheadLog = struct {
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.poisoned) return error.WalPoisoned;
 
-        // Scan forward from byte 0 to find the end position of the last
-        // record with LSN <= after_lsn.
         const io = std.Io.Threaded.global_single_threaded.io();
 
-        var valid_end: u64 = 0;
-        var last_lsn: u64 = 0;
-        var header_buf: [record.HEADER_SIZE]u8 = undefined;
+        // Locate the truncation boundary with the same validated forward scan
+        // used by recovery: CRC + AEAD + LSN monotonicity + encrypted/plaintext
+        // detection (SEC-0041, SEC-0043). This replaces the old bespoke scan,
+        // which skipped all integrity checks and — fatally — misread encrypted
+        // records (parsing blob_len+magic as a plaintext LSN), truncating the
+        // entire file on every call against an encrypted WAL. The scan is also
+        // buffered through FileSource rather than one pread per 12-byte header
+        // (PERF-0024).
+        const info = try recovery_mod.recoverUpToWithKey(
+            self.allocator,
+            self.file,
+            if (self.options.encryption_key) |*k| k else null,
+            after_lsn,
+        );
+        const valid_end = info.valid_end;
 
-        while (true) {
-            const bytes_read = self.file.readPositionalAll(io, &header_buf, valid_end) catch break;
-            if (bytes_read < record.HEADER_SIZE) break;
-
-            const lsn = std.mem.readInt(u64, header_buf[0..8], .little);
-            const payload_len = std.mem.readInt(u32, header_buf[8..12], .little);
-
-            // Guard against corrupt headers.
-            if (payload_len > record.MAX_RECORD_SIZE) break;
-
-            const record_size = record.HEADER_SIZE + payload_len + record.CRC_SIZE;
-            const record_end = valid_end + record_size;
-
-            if (lsn > after_lsn) {
-                // This record should be truncated. Stop here.
-                break;
-            }
-
-            valid_end = record_end;
-            last_lsn = lsn;
-        }
-
-        // Truncate the file and reposition cursor for streaming writes.
+        // Truncate the file and reposition the streaming-write cursor.
         try self.file.setLength(io, valid_end);
-        try self.file.sync(io);
+        // fdatasync (not full fsync): setLength's size change is data-reachability
+        // metadata, which fdatasync flushes; this matches every other sync site
+        // in the WAL (PERF-0024).
+        try std.posix.fdatasync(self.file.handle);
         _ = std.c.lseek(self.file.handle, @intCast(valid_end), 0);
 
         self.file_end = valid_end;
-        self.current_lsn = last_lsn;
+        self.current_lsn = info.last_lsn;
         self.bytes_since_compact = valid_end;
         self.appends_since_sync = 0;
 
@@ -2060,4 +2051,197 @@ test "registerWriterThread: returns NoThreadPool when pool not wired" {
     try std.testing.expectError(error.NoThreadPool, wal.registerWriterThread());
     // releaseWriterThread should be a safe no-op when there's no pool.
     wal.releaseWriterThread(0);
+}
+
+// ---------------------------------------------------------------------------
+// truncateAfter tests (SEC-0041 / SEC-0043 / PERF-0024)
+//
+// truncateAfter must route through the same validated scan as recovery:
+// CRC-verified, AEAD-verified, LSN-monotonic, and encryption-aware. Before
+// SEC-0041 it reimplemented a bespoke plaintext-only header scan that
+// truncated the ENTIRE file on any encrypted WAL (it parsed blob_len+magic as
+// a u64 LSN). These tests pin the correct behavior across both formats.
+// ---------------------------------------------------------------------------
+
+test "truncateAfter: plaintext keeps records with LSN <= after_lsn" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "trunc_plain.wal", .{ .manual_sync = true });
+    defer wal.deinit();
+
+    for (1..6) |i| {
+        var buf: [16]u8 = undefined;
+        const p = try std.fmt.bufPrint(&buf, "rec-{d}", .{i});
+        _ = try wal.append(p);
+    }
+    try wal.sync();
+    try std.testing.expectEqual(@as(u64, 5), wal.currentLsn());
+
+    try wal.truncateAfter(3);
+    try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: u64 = 0;
+    while (try iter.next()) |*entry| {
+        var e = entry.*;
+        defer e.deinit();
+        count += 1;
+        try std.testing.expectEqual(count, e.lsn);
+    }
+    try std.testing.expectEqual(@as(u64, 3), count);
+}
+
+test "truncateAfter: plaintext round-trip survives reopen" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "trunc_rt.wal", .{ .manual_sync = true });
+        defer wal.deinit();
+        for (1..6) |i| {
+            var buf: [16]u8 = undefined;
+            _ = try wal.append(try std.fmt.bufPrint(&buf, "rec-{d}", .{i}));
+        }
+        try wal.sync();
+        try wal.truncateAfter(2);
+    }
+
+    // Reopen: recovery must see exactly the kept prefix.
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "trunc_rt.wal", .{ .manual_sync = true });
+    defer wal.deinit();
+    try std.testing.expectEqual(@as(u64, 2), wal.currentLsn());
+
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: u64 = 0;
+    while (try iter.next()) |*entry| {
+        var e = entry.*;
+        defer e.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(u64, 2), count);
+}
+
+test "truncateAfter: after_lsn=0 empties the file" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "trunc_zero.wal", .{ .manual_sync = true });
+    defer wal.deinit();
+    _ = try wal.append("a");
+    _ = try wal.append("b");
+    try wal.sync();
+
+    try wal.truncateAfter(0);
+    try std.testing.expectEqual(@as(u64, 0), wal.currentLsn());
+
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    try std.testing.expect((try iter.next()) == null);
+}
+
+test "truncateAfter: after_lsn at or above max keeps everything" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "trunc_max.wal", .{ .manual_sync = true });
+    defer wal.deinit();
+    for (1..4) |_| _ = try wal.append("x");
+    try wal.sync();
+
+    try wal.truncateAfter(1000);
+    try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: u64 = 0;
+    while (try iter.next()) |*entry| {
+        var e = entry.*;
+        defer e.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(u64, 3), count);
+}
+
+test "truncateAfter: encrypted WAL keeps records with LSN <= after_lsn (SEC-0041)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const key = [_]u8{0x37} ** 32;
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "trunc_enc.wal", .{
+        .manual_sync = true,
+        .encryption_key = key,
+    });
+    defer wal.deinit();
+
+    for (1..6) |i| {
+        var buf: [16]u8 = undefined;
+        _ = try wal.append(try std.fmt.bufPrint(&buf, "secret-{d}", .{i}));
+    }
+    try wal.sync();
+    try std.testing.expectEqual(@as(u64, 5), wal.currentLsn());
+
+    // Before SEC-0041 this truncated the entire file (blob_len+magic parsed as
+    // a bogus huge LSN, so the loop broke on record 1 and setLength(0) ran).
+    try wal.truncateAfter(3);
+    try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: u64 = 0;
+    while (try iter.next()) |*entry| {
+        var e = entry.*;
+        defer e.deinit();
+        count += 1;
+        var buf: [16]u8 = undefined;
+        const want = try std.fmt.bufPrint(&buf, "secret-{d}", .{count});
+        try std.testing.expectEqualStrings(want, e.payload);
+        try std.testing.expectEqual(count, e.lsn);
+    }
+    try std.testing.expectEqual(@as(u64, 3), count);
+}
+
+test "truncateAfter: encrypted round-trip survives reopen (SEC-0041)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const key = [_]u8{0x99} ** 32;
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "trunc_enc_rt.wal", .{
+            .manual_sync = true,
+            .encryption_key = key,
+        });
+        defer wal.deinit();
+        for (1..6) |i| {
+            var buf: [16]u8 = undefined;
+            _ = try wal.append(try std.fmt.bufPrint(&buf, "secret-{d}", .{i}));
+        }
+        try wal.sync();
+        try wal.truncateAfter(4);
+    }
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "trunc_enc_rt.wal", .{
+        .manual_sync = true,
+        .encryption_key = key,
+    });
+    defer wal.deinit();
+    try std.testing.expectEqual(@as(u64, 4), wal.currentLsn());
+
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: u64 = 0;
+    while (try iter.next()) |*entry| {
+        var e = entry.*;
+        defer e.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(u64, 4), count);
 }

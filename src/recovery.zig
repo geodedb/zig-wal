@@ -191,6 +191,38 @@ pub fn recoverWithKey(
     file: std.Io.File,
     key: ?*const [32]u8,
 ) !RecoveryInfo {
+    return scanForward(allocator, file, key, null);
+}
+
+/// Scan `file` from the beginning like `recoverWithKey`, but stop at the first
+/// fully-valid record whose LSN is greater than `until_lsn`. The returned
+/// `valid_end` is the byte offset immediately after the last record with
+/// LSN <= `until_lsn`, and `last_lsn` is that record's LSN.
+///
+/// This is the validated boundary-finder used by `WriteAheadLog.truncateAfter`
+/// (SEC-0041): it inherits the full CRC, AEAD, LSN-monotonicity, and
+/// encrypted/plaintext detection of the recovery scan, so a corrupt or crafted
+/// tail can never drive truncation past a valid record boundary, and encrypted
+/// records are parsed correctly rather than misread as plaintext headers.
+///
+/// `until_lsn == 0` keeps no records (valid_end == 0).
+pub fn recoverUpToWithKey(
+    allocator: std.mem.Allocator,
+    file: std.Io.File,
+    key: ?*const [32]u8,
+    until_lsn: u64,
+) !RecoveryInfo {
+    return scanForward(allocator, file, key, until_lsn);
+}
+
+/// Shared forward scan for `recoverWithKey` (`until_lsn == null`, scan to EOF)
+/// and `recoverUpToWithKey` (stop after the last record with LSN <= until_lsn).
+fn scanForward(
+    allocator: std.mem.Allocator,
+    file: std.Io.File,
+    key: ?*const [32]u8,
+    until_lsn: ?u64,
+) !RecoveryInfo {
     // 0.16 uses FileSource with positional I/O offset tracking from byte 0.
     var src = record.FileSource.init(file);
 
@@ -234,6 +266,10 @@ pub fn recoverWithKey(
             };
 
             // ── Valid encrypted record — update scan state ─────────────────
+            // Stop before including a record past the truncation watermark
+            // (SEC-0041). The record is fully validated above, so the boundary
+            // is real; we simply do not advance valid_end past it.
+            if (until_lsn) |max| if (rec.lsn > max) break;
             // Reject non-monotonic LSNs as corruption (SEC-0022).
             if (info.record_count > 0 and rec.lsn <= info.last_lsn) break;
             info.last_lsn = rec.lsn;
@@ -276,6 +312,9 @@ pub fn recoverWithKey(
                 if (!record.verifyCrc(header_buf, payload_slice, crc_slice)) break;
             }
 
+            // Stop before including a record past the truncation watermark
+            // (SEC-0041). CRC has been verified above, so the boundary is real.
+            if (until_lsn) |max| if (lsn > max) break;
             // Reject non-monotonic LSNs as corruption (SEC-0022).
             if (info.record_count > 0 and lsn <= info.last_lsn) break;
             info.last_lsn = lsn;
