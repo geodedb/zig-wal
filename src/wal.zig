@@ -172,6 +172,11 @@ pub const WriteAheadLog = struct {
     current_lsn: u64,
     file_end: u64,
     bytes_since_compact: u64,
+    /// Byte offset at which the last record begins (so `[last_record_start,
+    /// file_end)` is that record's on-disk bytes). Persisted in the checkpoint
+    /// so the O(1) startup path can re-validate the boundary (SEC-0044/0046).
+    /// 0 when the WAL is empty.
+    last_record_start: u64,
     options: Options,
     appends_since_sync: u32,
     /// When `true` the WAL file handle is invalid and all operations
@@ -229,10 +234,32 @@ pub const WriteAheadLog = struct {
         const info = blk: {
             if (options.checkpoint) {
                 if (checkpoint_mod.readCheckpoint(dir, filename)) |ckpt| {
+                    // Re-validate the checkpoint's boundary against the actual
+                    // file before trusting the unscanned prefix. A stale,
+                    // cross-WAL, or forged checkpoint whose valid_end does not
+                    // land on a real intact record (matching last_lsn, CRC/AEAD)
+                    // is rejected here, forcing a full scan rather than letting
+                    // recovery start mid-prefix and truncate valid data
+                    // (SEC-0044/SEC-0045/SEC-0046).
+                    const boundary_ok = recovery_mod.validateCheckpointBoundary(
+                        allocator,
+                        file,
+                        if (options.encryption_key) |*key| key else null,
+                        ckpt.last_lsn,
+                        ckpt.valid_end,
+                        ckpt.last_record_start,
+                    );
+                    if (!boundary_ok) {
+                        break :blk if (options.encryption_key) |*key|
+                            try recovery_mod.recoverWithKey(allocator, file, key)
+                        else
+                            try recovery_mod.recover(allocator, file);
+                    }
                     const start = recovery_mod.RecoveryInfo{
                         .last_lsn = ckpt.last_lsn,
                         .valid_end = ckpt.valid_end,
                         .record_count = ckpt.record_count,
+                        .last_record_start = ckpt.last_record_start,
                     };
                     const inc = if (options.encryption_key) |*key|
                         recovery_mod.recoverFromWithKey(allocator, file, start, key)
@@ -306,6 +333,7 @@ pub const WriteAheadLog = struct {
             .current_lsn = info.last_lsn,
             .file_end = info.valid_end,
             .bytes_since_compact = info.valid_end,
+            .last_record_start = info.last_record_start,
             .options = options,
             .appends_since_sync = 0,
             .poisoned = false,
@@ -322,6 +350,7 @@ pub const WriteAheadLog = struct {
                 .last_lsn = self.current_lsn,
                 .valid_end = self.file_end,
                 .record_count = 0, // record_count not tracked by WAL; checkpoint serves as position hint
+                .last_record_start = self.last_record_start,
             }) catch {};
         }
         if (self.options.encryption_key) |*key| {
@@ -469,8 +498,10 @@ pub const WriteAheadLog = struct {
             self.bytes_since_compact += bytes_written;
         }
 
-        // LSN only advances after successful write (SEC-0030).
+        // LSN and last-record boundary only advance after a successful write
+        // (SEC-0030). pre_write_pos is the start of the record just written.
         self.current_lsn = lsn;
+        self.last_record_start = pre_write_pos;
 
         if (!self.options.manual_sync) {
             self.appends_since_sync +|= 1; // Saturating add (SEC-0031).
@@ -720,6 +751,16 @@ pub const WriteAheadLog = struct {
 
         // LSN only advances after successful write (SEC-0030).
         self.current_lsn = last_lsn;
+        // Track where the LAST record of the batch begins (for the checkpoint
+        // boundary anchor, SEC-0044/0046): its on-disk size subtracted from the
+        // batch end.
+        const last_payload_len = payloads[payloads.len - 1].len;
+        const last_rec_size = record.HEADER_SIZE + last_payload_len + record.CRC_SIZE;
+        const last_on_disk = if (self.options.encryption_key != null)
+            encryption.ENCRYPTION_OVERHEAD + last_rec_size
+        else
+            last_rec_size;
+        self.last_record_start = pre_write_pos + total_size - last_on_disk;
         self.file_end += total_size;
         self.bytes_since_compact += total_size;
 
@@ -795,6 +836,16 @@ pub const WriteAheadLog = struct {
         };
 
         // Update bookkeeping before reopen so cursor is positioned correctly.
+        // Compaction removes a prefix [0, first_kept_offset) and shifts every
+        // kept record down by that amount, so the last record's start moves by
+        // the same delta (old_file_end - new_size). When nothing is kept the WAL
+        // is empty and there is no record anchor (SEC-0044/0046).
+        const removed = self.file_end - result.new_size;
+        if (result.records_kept == 0) {
+            self.last_record_start = 0;
+        } else {
+            self.last_record_start -= removed;
+        }
         self.file_end = result.new_size;
 
         // Reopen the (now compacted) file for appending (QA-0010).
@@ -875,6 +926,7 @@ pub const WriteAheadLog = struct {
 
         self.file_end = valid_end;
         self.current_lsn = info.last_lsn;
+        self.last_record_start = info.last_record_start;
         self.bytes_since_compact = valid_end;
         self.appends_since_sync = 0;
 
@@ -2358,4 +2410,140 @@ test "append: encrypted record-size limit accounts for AEAD overhead (PERF-0033)
     defer allocator.free(buf);
     @memset(buf, 0x22);
     try std.testing.expectError(error.RecordTooLarge, wal.append(buf));
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint integrity tests (SEC-0044 / SEC-0045 / SEC-0046)
+//
+// The checkpoint's CRC-32 is not a MAC, so a stale, cross-WAL, or forged
+// sidecar could otherwise point the O(1) recovery start at an arbitrary offset
+// and cause init() to truncate valid data. init() now re-validates the
+// boundary (recovery.validateCheckpointBoundary) before trusting the prefix.
+// ---------------------------------------------------------------------------
+
+fn forgeCheckpoint(
+    dir: std.Io.Dir,
+    name: []const u8,
+    last_lsn: u64,
+    valid_end: u64,
+    record_count: u64,
+    last_record_start: u64,
+) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var buf: [checkpoint_mod.CHECKPOINT_SIZE]u8 = undefined;
+    std.mem.writeInt(u64, buf[0..8], last_lsn, .little);
+    std.mem.writeInt(u64, buf[8..16], valid_end, .little);
+    std.mem.writeInt(u64, buf[16..24], record_count, .little);
+    std.mem.writeInt(u64, buf[24..32], last_record_start, .little);
+    // A valid CRC — readCheckpoint accepts it; only the boundary check rejects it.
+    const crc = std.hash.crc.Crc32IsoHdlc.hash(buf[0..32]);
+    std.mem.writeInt(u32, buf[32..36], crc, .little);
+    const f = try dir.createFile(io, name, .{ .truncate = true });
+    defer f.close(io);
+    try f.writeStreamingAll(io, &buf);
+}
+
+test "checkpoint: forged boundary is rejected; full scan recovers all (SEC-0044/SEC-0046)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "ck.wal", .{ .checkpoint = true });
+        defer wal.deinit();
+        for (1..6) |i| {
+            var b: [16]u8 = undefined;
+            _ = try wal.append(try std.fmt.bufPrint(&b, "rec-{d}", .{i}));
+        }
+    }
+
+    // Forge: claim valid_end=10 (mid first record) with a bogus high LSN but a
+    // VALID CRC. If trusted, init() would truncate the file to 10 bytes.
+    try forgeCheckpoint(tmp.dir, "ck.wal.ckpt", 99, 10, 1, 0);
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "ck.wal", .{ .checkpoint = true });
+    defer wal.deinit();
+    // Boundary validation rejected the forgery → full scan recovered everything.
+    try std.testing.expectEqual(@as(u64, 5), wal.currentLsn());
+
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: u64 = 0;
+    while (try iter.next()) |*entry| {
+        var e = entry.*;
+        defer e.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(u64, 5), count);
+}
+
+test "checkpoint: tampered last_lsn is rejected; full scan recovers all (SEC-0045/SEC-0046)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var real_valid_end: u64 = 0;
+    var real_last_start: u64 = 0;
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "ck2.wal", .{ .checkpoint = true });
+        defer wal.deinit();
+        for (1..4) |i| {
+            var b: [16]u8 = undefined;
+            _ = try wal.append(try std.fmt.bufPrint(&b, "rec-{d}", .{i}));
+        }
+        real_valid_end = wal.file_end;
+        real_last_start = wal.last_record_start;
+    }
+
+    // Keep the REAL boundary offsets (so the record exists and ends at valid_end)
+    // but tamper last_lsn. The record at last_record_start has LSN 3, not 999, so
+    // boundary validation must reject the checkpoint.
+    try forgeCheckpoint(tmp.dir, "ck2.wal.ckpt", 999, real_valid_end, 1, real_last_start);
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "ck2.wal", .{ .checkpoint = true });
+    defer wal.deinit();
+    try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+
+    var iter = try wal.iterator(0);
+    defer iter.deinit();
+    var count: u64 = 0;
+    while (try iter.next()) |*entry| {
+        var e = entry.*;
+        defer e.deinit();
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(u64, 3), count);
+}
+
+test "checkpoint: legitimate checkpoint round-trips with boundary anchor (SEC-0046)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "ck3.wal", .{ .checkpoint = true });
+        defer wal.deinit();
+        for (1..4) |i| {
+            var b: [16]u8 = undefined;
+            _ = try wal.append(try std.fmt.bufPrint(&b, "rec-{d}", .{i}));
+        }
+    }
+
+    // The written checkpoint's last_record_start must point at the real last
+    // record so validateCheckpointBoundary accepts it (O(1) path stays usable).
+    const ckpt = checkpoint_mod.readCheckpoint(tmp.dir, "ck3.wal") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(ckpt.last_record_start < ckpt.valid_end);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const wal_file = try tmp.dir.openFile(io, "ck3.wal", .{});
+    defer wal_file.close(io);
+    const ok = recovery_mod.validateCheckpointBoundary(
+        allocator,
+        wal_file,
+        null,
+        ckpt.last_lsn,
+        ckpt.valid_end,
+        ckpt.last_record_start,
+    );
+    try std.testing.expect(ok);
 }

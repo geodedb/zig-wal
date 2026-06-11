@@ -53,6 +53,11 @@ pub const RecoveryInfo = struct {
     valid_end: u64,
     /// Number of valid records found during the scan.
     record_count: u64,
+    /// File offset at which the last valid record begins (so the byte range
+    /// `[last_record_start, valid_end)` is exactly that record's on-disk bytes).
+    /// 0 when no records were found. Used by the checkpoint layer to re-validate
+    /// the boundary on O(1) startup (SEC-0044/SEC-0046).
+    last_record_start: u64 = 0,
 };
 
 // ============================================================================
@@ -139,6 +144,7 @@ pub fn recoverFromWithKey(
             const rec = record.deserialize(plaintext) catch break;
 
             if (info.record_count > 0 and rec.lsn <= info.last_lsn) break;
+            info.last_record_start = info.valid_end;
             info.last_lsn = rec.lsn;
             info.record_count += 1;
             info.valid_end += blob_result.total_on_disk;
@@ -167,6 +173,7 @@ pub fn recoverFromWithKey(
             }
 
             if (info.record_count > 0 and lsn <= info.last_lsn) break;
+            info.last_record_start = info.valid_end;
             info.last_lsn = lsn;
             info.record_count += 1;
             info.valid_end += @as(u64, record.HEADER_SIZE) + @as(u64, payload_len) + @as(u64, record.CRC_SIZE);
@@ -272,6 +279,7 @@ fn scanForward(
             if (until_lsn) |max| if (rec.lsn > max) break;
             // Reject non-monotonic LSNs as corruption (SEC-0022).
             if (info.record_count > 0 and rec.lsn <= info.last_lsn) break;
+            info.last_record_start = info.valid_end;
             info.last_lsn = rec.lsn;
             info.record_count += 1;
             info.valid_end += blob_result.total_on_disk;
@@ -317,6 +325,7 @@ fn scanForward(
             if (until_lsn) |max| if (lsn > max) break;
             // Reject non-monotonic LSNs as corruption (SEC-0022).
             if (info.record_count > 0 and lsn <= info.last_lsn) break;
+            info.last_record_start = info.valid_end;
             info.last_lsn = lsn;
             info.record_count += 1;
             info.valid_end += @as(u64, record.HEADER_SIZE) + @as(u64, payload_len) + @as(u64, record.CRC_SIZE);
@@ -328,6 +337,87 @@ fn scanForward(
     // seekTo removed in 0.16 — using positional I/O
 
     return info;
+}
+
+/// Re-validate that a checkpoint's claimed boundary lands on a real, intact
+/// record in `file` before the O(1) startup path trusts the unscanned prefix
+/// (SEC-0044/SEC-0046). Reads exactly the last record
+/// `[last_record_start, valid_end)` and confirms it is a well-formed record —
+/// CRC-verified for plaintext, AEAD-verified for encrypted — whose LSN equals
+/// `last_lsn` and that ends exactly at `valid_end`.
+///
+/// A stale, cross-WAL, or forged checkpoint will not line up with a real record
+/// boundary in the current file, so this returns false and the caller falls
+/// back to a full scan. The checkpoint's CRC-32 is not a MAC; this content
+/// re-check is what makes trusting the prefix sound. For encrypted WALs the
+/// AEAD tag additionally authenticates the boundary with the caller's key.
+///
+/// `allocator` is used only for last records larger than the stack threshold.
+pub fn validateCheckpointBoundary(
+    allocator: std.mem.Allocator,
+    file: std.Io.File,
+    key: ?*const [32]u8,
+    last_lsn: u64,
+    valid_end: u64,
+    last_record_start: u64,
+) bool {
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    // An empty WAL (valid_end == 0) has no record to anchor on. The checkpoint
+    // still legitimately carries the high-water `last_lsn` (e.g. after compacting
+    // every record away) as the monotonicity baseline, so we accept any last_lsn
+    // here but require no bogus record anchor. A non-zero baseline only tightens
+    // the monotonicity gate on the next append (the safe direction).
+    if (valid_end == 0) return last_record_start == 0;
+    // The last record must begin strictly before the boundary it ends at.
+    if (last_record_start >= valid_end) return false;
+
+    var src = record.FileSource.initAt(file, last_record_start);
+
+    var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
+    const peek_n = src.readPositionalAll(io, &peek_buf, 0) catch return false;
+    if (peek_n < encryption.DETECT_PEEK_SIZE) return false;
+
+    if (key != null and encryption.isEncrypted(&peek_buf)) {
+        var reuse: ?[]u8 = null;
+        defer if (reuse) |b| {
+            encryption.secureZero(b);
+            allocator.free(b);
+        };
+        const blob_result = (encryption.readEncryptedBlobReuse(allocator, &src, &peek_buf, &reuse) catch return false) orelse return false;
+        const plaintext = encryption.decryptRecordInPlace(key.?, blob_result.blob) catch return false;
+        const rec = record.deserialize(plaintext) catch return false;
+        if (rec.lsn != last_lsn) return false;
+        if (last_record_start + blob_result.total_on_disk != valid_end) return false;
+        return true;
+    } else if (key != null) {
+        // Encrypted WAL but the last record is not encrypted — reject (SEC-0038).
+        return false;
+    } else {
+        const header_buf: [record.HEADER_SIZE]u8 = peek_buf;
+        const lsn = std.mem.readInt(u64, header_buf[0..8], .little);
+        const payload_len = std.mem.readInt(u32, header_buf[8..12], .little);
+        const tail_len = @as(usize, payload_len) + record.CRC_SIZE;
+
+        if (record.HEADER_SIZE + tail_len > record.MAX_RECORD_SIZE) return false;
+        // The record must end exactly at the claimed boundary.
+        if (last_record_start + record.HEADER_SIZE + tail_len != valid_end) return false;
+        if (lsn != last_lsn) return false;
+
+        if (tail_len <= STACK_READ_THRESHOLD + record.CRC_SIZE) {
+            var stack_buf: [STACK_READ_THRESHOLD + record.CRC_SIZE]u8 = undefined;
+            const tail = stack_buf[0..tail_len];
+            const n = src.readPositionalAll(io, tail, 0) catch return false;
+            if (n < tail_len) return false;
+            return record.verifyCrc(header_buf, tail[0..payload_len], tail[payload_len..]);
+        } else {
+            const heap_buf = allocator.alloc(u8, tail_len) catch return false;
+            defer allocator.free(heap_buf);
+            const n = src.readPositionalAll(io, heap_buf, 0) catch return false;
+            if (n < tail_len) return false;
+            return record.verifyCrc(header_buf, heap_buf[0..payload_len], heap_buf[payload_len..]);
+        }
+    }
 }
 
 // verifyCrc moved to record.zig (QA-0015) — use record.verifyCrc.
