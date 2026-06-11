@@ -214,12 +214,14 @@ Post-Review 4 improvements: PERF-0020 + PERF-0021 combined improved encrypted it
 | 32 | P2 | 36 | scale_bench Tier.iterations never read — single-sample estimates, no variance | `bench/scale_bench.zig` | Confirmed | [#181](https://gitlab.com/devnw/zig/wal/-/issues/181) | **Open** |
 | 33 | P3 | 24 | CI bench gate uses `bench` not `scale-bench`+`compare-bench` — no baseline comparison | `.gitlab-ci.yml` / `Makefile` | Confirmed | [#183](https://gitlab.com/devnw/zig/wal/-/issues/183) | **Open** |
 
-> Rows 23-33 are Review 8 (2026-06-11) findings, **open / triage**. PerfScore = Impact x Likelihood x 4.
+> Rows 23-33 are Review 8 (2026-06-11) findings. PerfScore = Impact x Likelihood x 4.
+> **Closed (branch audit-closure-2026-06-11):** rows 23 (PERF-0024), 25 (PERF-0027), 26 (PERF-0025),
+> 27 (PERF-0031), 28 (PERF-0033). **Open/Deferred:** rows 24 (PERF-0026), 29 (PERF-0028),
+> 30 (PERF-0029), 31 (PERF-0030), 32 (PERF-0032), 33 (PERF-0034).
 > PERF-0024/0026 confidence is scanner-level (first deep-review agent did not complete; no
-> profiler/strace measurements captured). PERF-0027 (row 25) is **Confirmed safe** — the aliasing was
-> proven across 200,006 batch shapes; the issue remains open only for the clarifying comment/test
-> (proof recorded on #157). Rows 27-33 (PERF-0028..0034) are confirmed code facts; the *impact
-> magnitude* is what the validation commands would measure. See per-finding sections below.
+> profiler/strace measurements captured). PERF-0027 (row 25) closed with the aliasing safety comment
+> landed. Rows 29-33 (PERF-0028..0034 except 0033) are deferred: each requires dedicated bench
+> variants, crossover measurement, or median wiring before a trustworthy gate is feasible.
 
 ## Findings by Area
 
@@ -799,14 +801,14 @@ enforcing regressions. Job depends on `test` stage completing first.
 
 ---
 
-## Review 8 Findings (2026-06-11) — OPEN
+## Review 8 Findings (2026-06-11) — Partially Closed (audit-closure-2026-06-11)
 
 > **Confidence caveat:** the deep-review validation agent died mid-run. These findings carry
 > **scanner-level confidence** unless a finding was independently confirmed by another domain's
 > reviewer. **No profiler/strace/benchmark measurements were captured this session** — each
 > finding's validation plan is the exact command that would confirm it.
 
-### PERF-0024: truncateAfter unbuffered pread-per-record + full fsync (P1, Score 64) — OPEN
+### PERF-0024: truncateAfter unbuffered pread-per-record + full fsync (P1, Score 64) — CLOSED
 
 **Evidence:** `src/wal.zig:805-825` — scan loop issues one unbuffered `readPositionalAll` (12-byte
 positional read) per record at `:806`. `src/wal.zig:829` — `self.file.sync(io)` is a full `fsync`,
@@ -833,7 +835,9 @@ switch `:829` to `std.posix.fdatasync`. Do not land independently of #139.
 
 ---
 
-### PERF-0026: Parallel batch triggers at N=2 with 5-7 allocations, no min-batch threshold (P2, Score 36) — OPEN
+### PERF-0026: Parallel batch triggers at N=2 with 5-7 allocations, no min-batch threshold (P2, Score 36) — OPEN (Deferred)
+
+**Deferred (audit-closure-2026-06-11):** Requires crossover measurement first (PERF-0030). Blocked until bench crossover sweep (#179) determines the effective parallel threshold.
 
 **Evidence:** `src/wal.zig:554` — `use_parallel = self.options.thread_pool != null and
 payloads.len > 1`. The parallel branch (`:556-599`) performs separate allocations for `offsets`,
@@ -860,7 +864,7 @@ unmeasured).
 
 ---
 
-### PERF-0027: Encrypted batch tail-scratch — investigated as a correctness bug, PROVEN SAFE (P2, Score 32) — OPEN (comment/test only)
+### PERF-0027: Encrypted batch tail-scratch — investigated as a correctness bug, PROVEN SAFE (P2, Score 32) — CLOSED
 
 **Evidence:** `src/wal.zig:646-648` — sequential encrypted batch encrypts in place using a tail
 scratch region `pt_start = total_size - rec_size`. Existing encrypted-batch tests use only
@@ -898,7 +902,7 @@ CTR safety also confirmed via QA-0084). The issue stays open only for the clarif
 
 ---
 
-### PERF-0025: Double file.stat() on checkpoint init path (P3, Score 8) — OPEN
+### PERF-0025: Double file.stat() on checkpoint init path (P3, Score 8) — CLOSED
 
 **Evidence:** `src/recovery.zig:107` stats the file (`if (stat.size < start.valid_end) return
 error.CheckpointStale;`); `src/wal.zig:243` re-stats the same file to guard the incremental result
@@ -921,7 +925,9 @@ the fstat count on the incremental init path to drop by 1.
 
 ---
 
-### PERF-0028: Checkpoint O(1) recovery path has no benchmark coverage (P2, Score 36) — OPEN
+### PERF-0028: Checkpoint O(1) recovery path has no benchmark coverage (P2, Score 36) — OPEN (Deferred)
+
+**Deferred (audit-closure-2026-06-11):** Requires dedicated bench variants for checkpoint-vs-full-scan recovery comparison. Deferred to a focused bench-coverage sprint.
 
 **Evidence:** `bench/main.zig:188-215` (`runRecoveryBench`) opens with default `Options` (`checkpoint`
 never set true), so the recovery bench always exercises the full O(N) scan, never the PERF-0013
@@ -936,7 +942,9 @@ measure re-open) in both bench files with a checkpoint-vs-full-scan column.
 
 ---
 
-### PERF-0029: Zero-copy compaction path has no benchmark coverage (P2, Score 36) — OPEN
+### PERF-0029: Zero-copy compaction path has no benchmark coverage (P2, Score 36) — OPEN (Deferred)
+
+**Deferred (audit-closure-2026-06-11):** Requires dedicated bench variants toggling `.zero_copy_compaction = true`. Deferred to a focused bench-coverage sprint alongside PERF-0028.
 
 **Evidence:** `bench/main.zig:226-253` (`runCompactBench`) omits `.zero_copy_compaction = true`, so the
 `copy_file_range` path (`compaction.zig:123-147`, PERF-0014) is never benchmarked — only the 256KB
@@ -950,7 +958,9 @@ user-space copy. `scale_bench.zig` `benchCompact` has the same gap.
 
 ---
 
-### PERF-0030: Thread-pool batch crossover never measured; scale_bench min batch=100 (P2, Score 36) — OPEN
+### PERF-0030: Thread-pool batch crossover never measured; scale_bench min batch=100 (P2, Score 36) — OPEN (Deferred)
+
+**Deferred (audit-closure-2026-06-11):** Requires benchBatchCrossover sweep sweeping batch_size 1-128. Blocked until sprint that can commit the crossover bench variants (feeds PERF-0026 threshold).
 
 **Evidence:** `bench/scale_bench.zig:93-96` smallest tier is `batch_size = 100`; the small-N region
 (2..64) where parallel dispatch+alloc overhead competes with the work saved is never sampled. The
@@ -963,7 +973,7 @@ parallel; use the crossover to set the PERF-0026 threshold.
 
 ---
 
-### PERF-0031: `zig build bench` builds WAL module at Debug while bench exe is ReleaseFast (P1, Score 56) — OPEN
+### PERF-0031: `zig build bench` builds WAL module at Debug while bench exe is ReleaseFast (P1, Score 56) — CLOSED
 
 **Evidence:** `build.zig:76-85` builds the `wal` module with the top-level `optimize` (defaults to
 **Debug**); `build.zig:159-164` hardcodes the bench exe to `.ReleaseFast` but imports the Debug
@@ -980,7 +990,9 @@ diverge from CI and real regressions are indistinguishable from the optimization
 
 ---
 
-### PERF-0032: scale_bench `Tier.iterations` defined but never used; single-sample, no variance (P2, Score 32) — OPEN
+### PERF-0032: scale_bench `Tier.iterations` defined but never used; single-sample, no variance (P2, Score 32) — OPEN (Deferred)
+
+**Deferred (audit-closure-2026-06-11):** Requires wiring median repeat loop into scale_bench before PERF-0034 regression gate is trustworthy. Deferred until a dedicated bench infrastructure sprint.
 
 **Evidence:** `bench/scale_bench.zig:88-96` declares and populates `iterations` but `grep` finds zero
 reads. Every metric is a single sample; `TierResult` JSON carries no min/max/stddev; `compare-bench`
@@ -997,7 +1009,7 @@ and document the single-sample limitation.
 
 ---
 
-### PERF-0033: appendBatch has no write-side MAX_RECORD_SIZE cap (P2, Score 40) — OPEN
+### PERF-0033: appendBatch has no write-side MAX_RECORD_SIZE cap (P2, Score 40) — CLOSED
 
 **Evidence:** `src/wal.zig:530-540` sums `total_size` and does one contiguous `alloc` with no batch
 cap; `src/record.zig:145-159` write-side serialize only panics at ~4 GiB `MAX_PAYLOAD_SIZE`. The
@@ -1014,7 +1026,9 @@ batch-byte cap, making write and read limits symmetric.
 
 ---
 
-### PERF-0034: CI bench-regression gate uses `bench` not `scale-bench` + `compare-bench` (P3, Score 24) — OPEN
+### PERF-0034: CI bench-regression gate uses `bench` not `scale-bench` + `compare-bench` (P3, Score 24) — OPEN (Deferred)
+
+**Deferred (audit-closure-2026-06-11):** Sequenced after PERF-0032 (#181) — point-to-point comparison of single samples is flaky until median is wired in. Deferred until PERF-0032 lands.
 
 **Evidence:** `.gitlab-ci.yml:205` runs `zig build bench -Doptimize=ReleaseFast` and captures
 `bench-results.txt` as an artifact, but performs **no baseline comparison**. The regression tooling
@@ -1100,8 +1114,8 @@ PERF-0033 (#182). P3 — PERF-0025 (#168), PERF-0034 (#183).
 **PERF-ID → IID mapping (Review 8):** 0024→#167, 0025→#168, 0026→#169, 0027→#170, 0028→#177,
 0029→#178, 0030→#179, 0031→#180, 0032→#181, 0033→#182, 0034→#183.
 
-**Overall status (post-Review 8):** 34 findings across 8 reviews. **23 closed; 11 open
-(PERF-0024..0034).**
+**Overall status (post-Review 8 + audit-closure-2026-06-11):** 34 findings across 8 reviews. **28 closed; 6 open/deferred
+(PERF-0026, 0028-0030, 0032, 0034).**
 
 **Dependencies / notes:**
 
