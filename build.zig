@@ -27,6 +27,10 @@ const Deps = struct {
     /// this so the in-process init helper is reachable from caller
     /// binaries via `wal.observability_init`.
     observability_init_mod: ?*std.Build.Module,
+    /// Shared `crypto_backend` named module (the FIPS seam). Threaded into
+    /// every compile unit that exercises security crypto. Built on the SAME
+    /// single `build_options` instance as the otel seam (GAP-0020-safe).
+    crypto_backend_mod: *std.Build.Module,
 };
 
 pub fn build(b: *std.Build) void {
@@ -42,6 +46,12 @@ pub fn build(b: *std.Build) void {
         "with_otel",
         "Compile in otel instrumentation (off by default; zero overhead when off)",
     ) orelse false;
+
+    // -Dfips: route security crypto through the linked OpenSSL FIPS-140-3
+    // provider. OFF by default with zero overhead; the lazy `fips` dependency
+    // is resolved only when this is true.
+    const fips = b.option(bool, "fips", "Route security crypto through the linked FIPS-140-3 provider (off by default; zero overhead when off)") orelse false;
+    const openssl_path = b.option([]const u8, "openssl_path", "OpenSSL install prefix for non-standard installs (e.g. /usr/local/ssl)");
 
     // Forward otel build options so the upstream package is configured
     // identically across all consumers in the build graph. Without this,
@@ -70,7 +80,7 @@ pub fn build(b: *std.Build) void {
         "Forward to upstream otel: DevNW gRPC",
     ) orelse false;
 
-    const deps = loadDeps(b, target, optimize, with_otel, otel_use_devnw_tls, otel_disabled, otel_profiles, otel_use_devnw_grpc);
+    const deps = loadDeps(b, target, optimize, with_otel, otel_use_devnw_tls, otel_disabled, otel_profiles, otel_use_devnw_grpc, fips, openssl_path);
 
     // Main library module
     const module = b.addModule("wal", .{
@@ -81,6 +91,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "thread_pool", .module = deps.thread_pool_mod },
             .{ .name = "observability", .module = deps.observability_mod },
             .{ .name = "build_options", .module = deps.build_options_mod },
+            .{ .name = "crypto_backend", .module = deps.crypto_backend_mod },
         }),
     });
     if (deps.observability_init_mod) |init_mod| {
@@ -172,6 +183,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "thread_pool", .module = deps.thread_pool_mod },
             .{ .name = "observability", .module = deps.observability_mod },
             .{ .name = "build_options", .module = deps.build_options_mod },
+            .{ .name = "crypto_backend", .module = deps.crypto_backend_mod },
         }),
     });
     if (deps.observability_init_mod) |init_mod| bench_module.addImport("observability_init", init_mod);
@@ -261,6 +273,8 @@ fn loadDeps(
     otel_disabled: bool,
     otel_profiles: bool,
     otel_use_devnw_grpc: bool,
+    fips: bool,
+    openssl_path: ?[]const u8,
 ) Deps {
     const tp_dep = b.dependency("thread_pool", .{
         .target = target,
@@ -282,7 +296,32 @@ fn loadDeps(
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "package_name", "wal");
     build_options.addOption(bool, "with_otel", with_otel);
+    build_options.addOption(bool, "fips", fips);
     const build_options_mod = build_options.createModule();
+
+    // FIPS seam — a SHARED NAMED `crypto_backend` module on the SAME single
+    // `build_options` instance as the otel seam (GAP-0020-safe). The lazy
+    // `fips` dependency + its OpenSSL link are pulled only when -Dfips=true.
+    const link = @import("src/link.zig");
+    const crypto_backend_mod = b.addModule("crypto_backend", .{
+        .root_source_file = b.path("src/crypto_backend.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = allocImports(b, &.{.{ .name = "build_options", .module = build_options_mod }}),
+    });
+    const std_shim_mod = b.addModule("std_shim", .{
+        .root_source_file = b.path("src/std_shim.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    crypto_backend_mod.addImport("std_shim", std_shim_mod);
+    if (fips) {
+        if (b.lazyDependency("fips", .{ .target = target, .optimize = optimize, .openssl_path = openssl_path orelse "/usr/local/ssl" })) |fips_dep| {
+            const fm = fips_dep.module("fips");
+            crypto_backend_mod.addImport("fips", fm);
+            link.linkOpenssl(b, fm, openssl_path);
+        }
+    }
 
     // Observability seam (otel). Declared as a SHARED NAMED MODULE so
     // every consumer (lib, tests, example, benchmarks, plus the seam
@@ -347,6 +386,7 @@ fn loadDeps(
         .observability_mod = observability_mod,
         .otel_mod = otel_mod,
         .observability_init_mod = observability_init_mod,
+        .crypto_backend_mod = crypto_backend_mod,
     };
 }
 
@@ -374,6 +414,7 @@ fn createRootModule(
             .{ .name = "thread_pool", .module = deps.thread_pool_mod },
             .{ .name = "observability", .module = deps.observability_mod },
             .{ .name = "build_options", .module = deps.build_options_mod },
+            .{ .name = "crypto_backend", .module = deps.crypto_backend_mod },
         }),
     });
     if (deps.observability_init_mod) |m| mod.addImport("observability_init", m);

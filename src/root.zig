@@ -72,4 +72,5 @@ test {
     _ = @import("encryption.zig");
     _ = @import("atomic.zig");
     _ = @import("checkpoint.zig");
+    _ = @import("crypto_backend_smoke_test.zig");
 }
