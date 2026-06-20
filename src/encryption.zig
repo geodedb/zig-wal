@@ -30,6 +30,9 @@
 //! systems should implement key rotation as a defence-in-depth measure.
 
 const std = @import("std");
+const crypto_backend = @import("crypto_backend");
+// fips-exempt: compile-time nonce/tag sizes only; the actual AEAD goes through
+// the seam (crypto_backend.Aead).
 const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
 const record = @import("record.zig");
 
@@ -258,8 +261,9 @@ pub fn encryptRecord(
     @memcpy(buf[OFF_MAGIC..][0..MAGIC_SIZE], &MAGIC);
 
     // Generate a random 96-bit nonce.
+    // FIPS-0005: nonce CSPRNG via the seam (FIPS DRBG under -Dfips).
     var nonce: [NONCE_SIZE]u8 = undefined;
-    std.Io.Threaded.global_single_threaded.io().random(&nonce);
+    crypto_backend.Csprng.bytes(&nonce) catch @panic("csprng failed");
     @memcpy(buf[OFF_NONCE..][0..NONCE_SIZE], &nonce);
 
     // Encrypt in-place into the ciphertext region; write tag at OFF_TAG.
@@ -274,7 +278,8 @@ pub fn encryptRecord(
     var tag: [TAG_SIZE]u8 = undefined;
     const ct = buf[OFF_CIPHERTEXT..][0..plaintext.len];
     const aad = buf[OFF_BLOB_LEN..OFF_NONCE];
-    Aes256Gcm.encrypt(ct, &tag, plaintext, aad, nonce, key.*);
+    // FIPS-0005: AES-256-GCM seal via the seam.
+    crypto_backend.Aead.seal(.aes_256_gcm, key, &nonce, aad, plaintext, ct, &tag) catch @panic("aead seal failed");
     @memcpy(buf[OFF_TAG..][0..TAG_SIZE], &tag);
 
     return buf;
@@ -301,14 +306,16 @@ pub fn encryptInto(buf: []u8, key: *const [32]u8, plaintext: []const u8) void {
     @memcpy(buf[OFF_MAGIC..][0..MAGIC_SIZE], &MAGIC);
 
     var nonce: [NONCE_SIZE]u8 = undefined;
-    std.Io.Threaded.global_single_threaded.io().random(&nonce);
+    // FIPS-0005: nonce CSPRNG via the seam.
+    crypto_backend.Csprng.bytes(&nonce) catch @panic("csprng failed");
     @memcpy(buf[OFF_NONCE..][0..NONCE_SIZE], &nonce);
 
     var tag: [TAG_SIZE]u8 = undefined;
     const ct = buf[OFF_CIPHERTEXT..][0..plaintext.len];
     // AAD = blob_len + magic (12 bytes) — binds framing metadata to the tag (SEC-0001).
     const aad = buf[OFF_BLOB_LEN..OFF_NONCE];
-    Aes256Gcm.encrypt(ct, &tag, plaintext, aad, nonce, key.*);
+    // FIPS-0005: AES-256-GCM seal via the seam.
+    crypto_backend.Aead.seal(.aes_256_gcm, key, &nonce, aad, plaintext, ct, &tag) catch @panic("aead seal failed");
     @memcpy(buf[OFF_TAG..][0..TAG_SIZE], &tag);
 }
 
@@ -411,7 +418,8 @@ pub fn decryptRecord(
 
     // AAD = blob_len + magic (12 bytes) — must match what encrypt used (SEC-0001).
     const aad = blob[OFF_BLOB_LEN..OFF_NONCE];
-    Aes256Gcm.decrypt(plaintext, ciphertext, tag, aad, nonce, key.*) catch {
+    // FIPS-0005: AES-256-GCM open via the seam (non-overlapping dest/src).
+    crypto_backend.Aead.open(.aes_256_gcm, key, &nonce, aad, ciphertext, &tag, plaintext) catch {
         return error.DecryptionFailed;
     };
 
@@ -448,14 +456,15 @@ pub fn decryptRecordInPlace(
     const ciphertext_start = OFF_CIPHERTEXT;
     const plaintext_len = blob.len - ENCRYPTION_OVERHEAD;
 
-    // Decrypt into the front of blob. The destination [0, plaintext_len) overlaps
-    // the ciphertext source [OFF_CIPHERTEXT, OFF_CIPHERTEXT+plaintext_len) whenever
-    // plaintext_len > OFF_CIPHERTEXT (i.e. blob.len > 2*ENCRYPTION_OVERHEAD = 80),
-    // but the source always starts OFF_CIPHERTEXT (40) bytes AHEAD of the
-    // destination, and AES-GCM is counter mode processed low-to-high, so each
-    // source byte is consumed before the destination write reaches it — in-place
-    // decryption is safe (SEC-0003).
-    Aes256Gcm.decrypt(blob[0..plaintext_len], blob[ciphertext_start..][0..plaintext_len], tag, &aad, nonce, key.*) catch {
+    // FIPS-0005: AES-256-GCM open via the seam. The seam's OpenSSL EVP backend
+    // does not guarantee partial-overlap (dest BEFORE src at a fixed offset),
+    // so we first memmove the ciphertext to the front of `blob` and then decrypt
+    // FULLY in-place (in == out at the same offset), which is supported by both
+    // the std and OpenSSL backends. memmove (not memcpy) because the regions
+    // overlap; std.mem.copyForwards is safe when the destination starts before
+    // the source. No heap allocation (the no-alloc contract is preserved).
+    std.mem.copyForwards(u8, blob[0..plaintext_len], blob[ciphertext_start..][0..plaintext_len]);
+    crypto_backend.Aead.open(.aes_256_gcm, key, &nonce, &aad, blob[0..plaintext_len], &tag, blob[0..plaintext_len]) catch {
         return error.DecryptionFailed;
     };
 
@@ -767,4 +776,16 @@ test "SEC-0039: u32 overflow bounds check arithmetic" {
     try std.testing.expectError(error.InvalidEncryptedRecord, decryptRecord(allocator, &key, &bad_blob));
     // decryptRecordInPlace: same check.
     try std.testing.expectError(error.InvalidEncryptedRecord, decryptRecordInPlace(&key, &bad_blob));
+}
+
+test "FIPS-0005: encryptRecord/decryptRecord round-trips and rejects a flipped tag byte" {
+    const a = std.testing.allocator;
+    const key = [_]u8{0x33} ** 32;
+    const blob = try encryptRecord(a, &key, "hello wal");
+    defer a.free(blob);
+    const pt = try decryptRecord(a, &key, blob);
+    defer a.free(pt);
+    try std.testing.expectEqualStrings("hello wal", pt);
+    blob[OFF_TAG] ^= 0x01;
+    try std.testing.expectError(error.DecryptionFailed, decryptRecord(a, &key, blob));
 }

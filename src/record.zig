@@ -15,6 +15,8 @@
 //! last byte of the payload. It does NOT cover the CRC field itself.
 
 const std = @import("std");
+// fips-exempt: non-security — CRC32 record framing checksum, not
+// adversary-resistant integrity (AES-GCM tag covers that for encrypted records).
 const Crc32IsoHdlc = std.hash.crc.Crc32IsoHdlc;
 
 /// Wraps `std.Io.File` with sequential read tracking so `readAll` works
