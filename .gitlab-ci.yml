@@ -217,3 +217,39 @@ bench-regression:
   allow_failure: true
   needs:
     - build
+
+# ---------------------------------------------------------------------------
+# FIPS-140-3 dual-mode test (-Dfips=true).
+#
+# `fips-deps` builds the latest OpenSSL 3.x + FIPS provider into
+# /usr/local/ssl (via the repo `make deps` target, which the ci-catalog
+# `zig-fips-build` component also provides). `test-fips` then runs the suite
+# against the validated FIPS backend. Linux-only; MR + default-branch.
+fips-deps:
+  stage: build
+  image: debian:bookworm-slim
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends build-essential perl curl xz-utils python3 ca-certificates
+    - *install-zig
+  script:
+    - make deps   # builds latest OpenSSL + FIPS provider into /usr/local/ssl
+  artifacts:
+    paths:
+      - /usr/local/ssl
+    expire_in: 1 day
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+test-fips:
+  stage: test
+  image: debian:bookworm-slim
+  before_script:
+    - *install-zig
+  script:
+    - OPENSSL_CONF=/usr/local/ssl/ssl/openssl.cnf zig build test -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
+  needs:
+    - fips-deps
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

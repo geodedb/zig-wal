@@ -178,3 +178,12 @@ help:
 	@echo "Maintenance:"
 	@echo "  clean                Remove build artifacts"
 	@echo "  help                 Show this help message"
+
+.PHONY: test-fips test-dual
+# FIPS-140-3 dual-mode test (-Dfips=true). Requires the OpenSSL FIPS
+# provider at $(or $(OPENSSL_PREFIX),/usr/local/ssl) (run `make deps` first).
+test-fips:
+	OPENSSL_CONF=$(or $(OPENSSL_PREFIX),/usr/local/ssl)/ssl/openssl.cnf zig build test -Dfips=true -Dopenssl_path=$(or $(OPENSSL_PREFIX),/usr/local/ssl) --summary all
+	OPENSSL_CONF=$(or $(OPENSSL_PREFIX),/usr/local/ssl)/ssl/openssl.cnf zig build test-integration -Dfips=true -Dopenssl_path=$(or $(OPENSSL_PREFIX),/usr/local/ssl) --summary all
+
+test-dual: test test-fips
