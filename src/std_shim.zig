@@ -47,6 +47,74 @@ pub const Hash = struct {
         @memcpy(out[0..d.len], &d);
         return d.len;
     }
+
+    /// Streaming / incremental digest over std.crypto's incremental hash
+    /// state. Public surface mirrors the fips backend's `Hash.Stream`
+    /// EXACTLY (init/update/final/clone/deinit), so a consumer can route
+    /// incremental hashing (TLS 1.3 transcript, DNSSEC canonical hashing)
+    /// through the seam unchanged across -Dfips.
+    ///
+    /// `clone` is a by-value copy of the running state (std hash states
+    /// are plain structs), producing a fully independent Stream. `deinit`
+    /// is a no-op (no heap state) but is provided for API parity with the
+    /// OpenSSL backend, which DOES own heap state.
+    pub const Stream = struct {
+        const Sha256 = std.crypto.hash.sha2.Sha256;
+        const Sha384 = std.crypto.hash.sha2.Sha384;
+        const Sha512 = std.crypto.hash.sha2.Sha512;
+        const Sha3_256 = std.crypto.hash.sha3.Sha3_256;
+        const Sha3_384 = std.crypto.hash.sha3.Sha3_384;
+        const Sha3_512 = std.crypto.hash.sha3.Sha3_512;
+
+        state: union(enum) {
+            sha256: Sha256,
+            sha384: Sha384,
+            sha512: Sha512,
+            sha3_256: Sha3_256,
+            sha3_384: Sha3_384,
+            sha3_512: Sha3_512,
+        },
+
+        pub fn init(alg: policy.Hash) Error!Stream {
+            return .{ .state = switch (alg) {
+                .sha256 => .{ .sha256 = Sha256.init(.{}) },
+                .sha384 => .{ .sha384 = Sha384.init(.{}) },
+                .sha512 => .{ .sha512 = Sha512.init(.{}) },
+                .sha3_256 => .{ .sha3_256 = Sha3_256.init(.{}) },
+                .sha3_384 => .{ .sha3_384 = Sha3_384.init(.{}) },
+                .sha3_512 => .{ .sha3_512 = Sha3_512.init(.{}) },
+            } };
+        }
+
+        pub fn update(self: *Stream, bytes: []const u8) void {
+            switch (self.state) {
+                inline else => |*h| h.update(bytes),
+            }
+        }
+
+        pub fn final(self: *Stream, out: []u8) Error!usize {
+            switch (self.state) {
+                inline else => |*h| {
+                    const H = @TypeOf(h.*);
+                    if (out.len < H.digest_length) return error.OpensslFailure;
+                    var d: [H.digest_length]u8 = undefined;
+                    h.final(&d);
+                    @memcpy(out[0..H.digest_length], &d);
+                    return H.digest_length;
+                },
+            }
+        }
+
+        /// By-value snapshot: the returned Stream shares no mutable state.
+        pub fn clone(self: *Stream) Error!Stream {
+            return .{ .state = self.state };
+        }
+
+        /// No-op in the shim (no heap state); present for API parity.
+        pub fn deinit(self: *Stream) void {
+            _ = self;
+        }
+    };
 };
 
 pub const Mac = struct {

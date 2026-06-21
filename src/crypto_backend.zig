@@ -19,6 +19,15 @@ const backend = if (fips_enabled) @import("fips") else @import("std_shim");
 
 pub const Aead = backend.Aead;
 pub const Hash = backend.Hash;
+/// Incremental / streaming hash surface (TLS 1.3 transcript, DNSSEC
+/// canonical hashing). Identical API across both backends:
+///   var s = try crypto_backend.HashStream.init(.sha256);
+///   defer s.deinit();
+///   s.update(chunk); ... ; const n = try s.final(out[0..]);
+///   var c = try s.clone(); // independent state snapshot
+/// `Hash.Stream` and this alias are the same type; the alias is provided
+/// so call sites need not spell the nested path.
+pub const HashStream = backend.Hash.Stream;
 pub const Mac = backend.Mac;
 pub const Kdf = backend.Kdf;
 pub const Sig = backend.Sig;
