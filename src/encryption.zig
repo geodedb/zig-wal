@@ -104,6 +104,8 @@ pub const EncryptionError = error{
 pub fn secureZero(buf: []u8) void {
     // Cast non-volatile slice to volatile for the stdlib call.
     const vol: []volatile u8 = @volatileCast(buf);
+    // fips-exempt: non-security — compiler-barrier memory clear (memset), not a
+    // cryptographic algorithm; produces no ciphertext/hash/key material.
     std.crypto.secureZero(u8, vol);
 }
 

@@ -47,6 +47,9 @@
 //! already outside the threat model for unencrypted on-disk data).
 
 const std = @import("std");
+// fips-exempt: non-security — CRC32 sidecar checksum guards against accidental
+// corruption only; the boundary re-read + AEAD tag (encrypted WALs) provide the
+// adversary-resistant integrity, so this is not a security primitive.
 const Crc32IsoHdlc = std.hash.crc.Crc32IsoHdlc;
 const atomic = @import("atomic.zig");
 const recovery_mod = @import("recovery.zig");

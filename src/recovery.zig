@@ -595,6 +595,8 @@ test "recover: non-monotonic LSN stops scan (SEC-0022)" {
     if (n < rec_size) return error.Unexpected;
 
     // Recompute CRC over header + payload.
+    // fips-exempt: non-security — CRC32 record framing checksum (test helper),
+    // not an adversary-resistant integrity primitive.
     const crc = std.hash.crc.Crc32IsoHdlc.hash(rec_buf[0 .. record.HEADER_SIZE + payload_str.len]);
     std.mem.writeInt(u32, rec_buf[record.HEADER_SIZE + payload_str.len ..][0..4], crc, .little);
 

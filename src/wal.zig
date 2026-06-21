@@ -2505,6 +2505,8 @@ fn forgeCheckpoint(
     std.mem.writeInt(u64, buf[16..24], record_count, .little);
     std.mem.writeInt(u64, buf[24..32], last_record_start, .little);
     // A valid CRC — readCheckpoint accepts it; only the boundary check rejects it.
+    // fips-exempt: non-security — CRC32 sidecar checksum (test helper), not an
+    // adversary-resistant integrity primitive.
     const crc = std.hash.crc.Crc32IsoHdlc.hash(buf[0..32]);
     std.mem.writeInt(u32, buf[32..36], crc, .little);
     const f = try dir.createFile(io, name, .{ .truncate = true });
