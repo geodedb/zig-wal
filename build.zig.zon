@@ -23,7 +23,8 @@
         // Zig 0.16 rejects absolute .path values, so this is the build-root-
         // relative path to /home/benji/src/devnw/zig/fips.
         .fips = .{
-            .path = "../../../../../devnw/zig/fips",
+            .url = "git+https://gitlab.com/devnw/zig/fips.git#v0.1.0",
+            .hash = "fips-0.1.0-1wf3nbxWBgAp6yAk6cPRrF5l_U1tbblcVcN9xcjJDddy",
             .lazy = true,
         },
     },
