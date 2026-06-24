@@ -1,0 +1,16 @@
+31:11:1:ZL203.const_snakecase:constant 'atomicWriteFile' should use snake_case (or PascalCase for types)
+47:11:1:ZL203.const_snakecase:constant 'RECORD_HEADER_SIZE' should use snake_case (or PascalCase for types)
+48:11:1:ZL203.const_snakecase:constant 'RECORD_CRC_SIZE' should use snake_case (or PascalCase for types)
+49:11:1:ZL203.const_snakecase:constant 'ENCRYPTION_OVERHEAD' should use snake_case (or PascalCase for types)
+28:21:2:ZL204.no_dupe_import:duplicate import of 'wal.zig' (first at line 27)
+67:9:2:ZL204.no_dupe_import:duplicate import of 'record.zig' (first at line 39)
+68:9:2:ZL204.no_dupe_import:duplicate import of 'wal.zig' (first at line 27)
+72:9:2:ZL204.no_dupe_import:duplicate import of 'encryption.zig' (first at line 44)
+73:9:2:ZL204.no_dupe_import:duplicate import of 'atomic.zig' (first at line 31)
+27:1:1:ZL011.missing_doc_comment:public declaration 'WriteAheadLog' is missing documentation
+28:1:1:ZL011.missing_doc_comment:public declaration 'Options' is missing documentation
+47:1:1:ZL011.missing_doc_comment:public declaration 'RECORD_HEADER_SIZE' is missing documentation
+48:1:1:ZL011.missing_doc_comment:public declaration 'RECORD_CRC_SIZE' is missing documentation
+49:1:1:ZL011.missing_doc_comment:public declaration 'ENCRYPTION_OVERHEAD' is missing documentation
+55:1:1:ZL011.missing_doc_comment:public declaration 'observability' is missing documentation
+60:1:1:ZL011.missing_doc_comment:public declaration 'observability_init' is missing documentation

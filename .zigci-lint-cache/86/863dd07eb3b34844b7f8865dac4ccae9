@@ -1,0 +1,7 @@
+17:101:2:ZL300.max_line_length:line exceeds 100 characters (127)
+10:9:1:ZL009.var_should_be_const:variable 'ct' is never reassigned; consider using 'const'
+11:9:1:ZL009.var_should_be_const:variable 'tag' is never reassigned; consider using 'const'
+13:9:1:ZL009.var_should_be_const:variable 'rt' is never reassigned; consider using 'const'
+7:23:1:ZL010.magic_number:magic number 0x11; consider using a named constant
+8:25:1:ZL010.magic_number:magic number 0x22; consider using a named constant
+8:34:1:ZL010.magic_number:magic number 12; consider using a named constant

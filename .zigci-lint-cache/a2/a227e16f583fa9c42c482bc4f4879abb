@@ -1,0 +1,36 @@
+279:50:3:ZL003.no_empty_catch:empty catch block suppresses errors
+9:4:1:ZL200.fn_camelcase:function 'scenario_io' should use camelCase
+74:11:2:ZL108.sensitive_data_exposure:potential hardcoded secret 'secret'; use environment variables or secure storage
+24:9:1:ZL009.var_should_be_const:variable 'key' is never reassigned; consider using 'const'
+71:9:1:ZL009.var_should_be_const:variable 'key' is never reassigned; consider using 'const'
+106:9:1:ZL009.var_should_be_const:variable 'key' is never reassigned; consider using 'const'
+140:9:1:ZL009.var_should_be_const:variable 'key' is never reassigned; consider using 'const'
+173:9:1:ZL009.var_should_be_const:variable 'maybe_e5' is never reassigned; consider using 'const'
+187:9:1:ZL009.var_should_be_const:variable 'key' is never reassigned; consider using 'const'
+226:9:1:ZL009.var_should_be_const:variable 'key' is never reassigned; consider using 'const'
+250:13:1:ZL009.var_should_be_const:variable 'maybe_e3' is never reassigned; consider using 'const'
+256:13:1:ZL009.var_should_be_const:variable 'maybe_e4' is never reassigned; consider using 'const'
+271:9:1:ZL009.var_should_be_const:variable 'key' is never reassigned; consider using 'const'
+323:9:1:ZL009.var_should_be_const:variable 'tmp' is never reassigned; consider using 'const'
+326:9:1:ZL009.var_should_be_const:variable 'key' is never reassigned; consider using 'const'
+334:9:1:ZL009.var_should_be_const:variable 'log' is never reassigned; consider using 'const'
+343:9:1:ZL009.var_should_be_const:variable 'iter' is never reassigned; consider using 'const'
+347:13:1:ZL009.var_should_be_const:variable 'maybe_entry' is never reassigned; consider using 'const'
+38:46:1:ZL010.magic_number:magic number 3; consider using a named constant
+48:46:1:ZL010.magic_number:magic number 3; consider using a named constant
+117:42:1:ZL010.magic_number:magic number 3; consider using a named constant
+118:42:1:ZL010.magic_number:magic number 3; consider using a named constant
+155:42:1:ZL010.magic_number:magic number 5; consider using a named constant
+158:21:1:ZL010.magic_number:magic number 3; consider using a named constant
+160:42:1:ZL010.magic_number:magic number 5; consider using a named constant
+170:42:1:ZL010.magic_number:magic number 4; consider using a named constant
+176:42:1:ZL010.magic_number:magic number 5; consider using a named constant
+199:46:1:ZL010.magic_number:magic number 3; consider using a named constant
+253:46:1:ZL010.magic_number:magic number 3; consider using a named constant
+259:46:1:ZL010.magic_number:magic number 4; consider using a named constant
+274:37:1:ZL010.magic_number:magic number 25; consider using a named constant
+274:56:1:ZL010.magic_number:magic number 4096; consider using a named constant
+283:26:1:ZL010.magic_number:magic number 0xAB; consider using a named constant
+313:53:1:ZL010.magic_number:magic number 0xAB; consider using a named constant
+341:42:1:ZL010.magic_number:magic number 3; consider using a named constant
+91:30:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer

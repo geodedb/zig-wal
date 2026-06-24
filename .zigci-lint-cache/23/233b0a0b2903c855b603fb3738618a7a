@@ -1,0 +1,31 @@
+61:11:1:ZL203.const_snakecase:constant 'CHECKPOINT_SIZE' should use snake_case (or PascalCase for types)
+64:11:1:ZL203.const_snakecase:constant 'CHECKPOINT_SUFFIX' should use snake_case (or PascalCase for types)
+96:101:2:ZL300.max_line_length:line exceeds 100 characters (135)
+114:101:2:ZL300.max_line_length:line exceeds 100 characters (118)
+116:101:2:ZL300.max_line_length:line exceeds 100 characters (109)
+120:101:2:ZL300.max_line_length:line exceeds 100 characters (109)
+146:101:2:ZL300.max_line_length:line exceeds 100 characters (113)
+147:101:2:ZL300.max_line_length:line exceeds 100 characters (101)
+150:101:2:ZL300.max_line_length:line exceeds 100 characters (130)
+201:101:2:ZL300.max_line_length:line exceeds 100 characters (125)
+203:101:2:ZL300.max_line_length:line exceeds 100 characters (116)
+214:101:2:ZL300.max_line_length:line exceeds 100 characters (106)
+50:22:3:ZL109.fips_unguarded_crypto:'std.hash.' bypasses the FIPS crypto_backend seam; route through crypto_backend or annotate '// fips-exempt: non-security'
+95:9:1:ZL009.var_should_be_const:variable 'ckpt_name_buf' is never reassigned; consider using 'const'
+98:9:1:ZL009.var_should_be_const:variable 'buf' is never reassigned; consider using 'const'
+113:9:1:ZL009.var_should_be_const:variable 'ckpt_name_buf' is never reassigned; consider using 'const'
+119:9:1:ZL009.var_should_be_const:variable 'buf' is never reassigned; consider using 'const'
+145:9:1:ZL009.var_should_be_const:variable 'ckpt_name_buf' is never reassigned; consider using 'const'
+243:9:1:ZL009.var_should_be_const:variable 'tmp' is never reassigned; consider using 'const'
+101:35:1:ZL010.magic_number:magic number 24; consider using a named constant
+104:35:1:ZL010.magic_number:magic number 36; consider using a named constant
+131:54:1:ZL010.magic_number:magic number 24; consider using a named constant
+165:21:1:ZL010.magic_number:magic number 42; consider using a named constant
+167:25:1:ZL010.magic_number:magic number 10; consider using a named constant
+174:42:1:ZL010.magic_number:magic number 42; consider using a named constant
+176:42:1:ZL010.magic_number:magic number 10; consider using a named constant
+196:25:1:ZL010.magic_number:magic number 5; consider using a named constant
+203:85:1:ZL010.magic_number:magic number 0xFF; consider using a named constant
+216:90:1:ZL010.magic_number:magic number 10; consider using a named constant
+116:21:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+201:29:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer

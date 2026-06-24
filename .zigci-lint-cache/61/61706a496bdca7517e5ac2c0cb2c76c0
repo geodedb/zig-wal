@@ -1,0 +1,9 @@
+11:31:3:ZL003.no_empty_catch:empty catch block suppresses errors
+81:49:3:ZL003.no_empty_catch:empty catch block suppresses errors
+82:56:3:ZL003.no_empty_catch:empty catch block suppresses errors
+101:76:3:ZL003.no_empty_catch:empty catch block suppresses errors
+72:9:1:ZL009.var_should_be_const:variable 'name_buf' is never reassigned; consider using 'const'
+117:13:1:ZL009.var_should_be_const:variable 'tracer' is never reassigned; consider using 'const'
+118:13:1:ZL009.var_should_be_const:variable 'meter' is never reassigned; consider using 'const'
+35:1:1:ZL011.missing_doc_comment:public declaration 'enabled' is missing documentation
+44:5:1:ZL011.missing_doc_comment:public declaration 'end' is missing documentation

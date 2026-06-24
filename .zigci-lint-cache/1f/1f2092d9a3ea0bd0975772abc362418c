@@ -1,0 +1,76 @@
+523:7:1:ZL201.type_pascalcase:type 'c_env' should use PascalCase
+47:11:1:ZL203.const_snakecase:constant 'MAGIC_SIZE' should use snake_case (or PascalCase for types)
+50:11:1:ZL203.const_snakecase:constant 'NONCE_SIZE' should use snake_case (or PascalCase for types)
+53:11:1:ZL203.const_snakecase:constant 'TAG_SIZE' should use snake_case (or PascalCase for types)
+56:11:1:ZL203.const_snakecase:constant 'BLOB_LEN_SIZE' should use snake_case (or PascalCase for types)
+61:11:1:ZL203.const_snakecase:constant 'ENCRYPTION_OVERHEAD' should use snake_case (or PascalCase for types)
+65:11:1:ZL203.const_snakecase:constant 'DETECT_PEEK_SIZE' should use snake_case (or PascalCase for types)
+68:7:1:ZL203.const_snakecase:constant 'OFF_BLOB_LEN' should use snake_case (or PascalCase for types)
+69:7:1:ZL203.const_snakecase:constant 'OFF_MAGIC' should use snake_case (or PascalCase for types)
+70:7:1:ZL203.const_snakecase:constant 'OFF_NONCE' should use snake_case (or PascalCase for types)
+71:7:1:ZL203.const_snakecase:constant 'OFF_TAG' should use snake_case (or PascalCase for types)
+72:7:1:ZL203.const_snakecase:constant 'OFF_CIPHERTEXT' should use snake_case (or PascalCase for types)
+376:7:1:ZL203.const_snakecase:constant 'STACK_WRITE_THRESHOLD' should use snake_case (or PascalCase for types)
+76:101:2:ZL300.max_line_length:line exceeds 100 characters (110)
+156:101:2:ZL300.max_line_length:line exceeds 100 characters (125)
+220:101:2:ZL300.max_line_length:line exceeds 100 characters (138)
+282:101:2:ZL300.max_line_length:line exceeds 100 characters (115)
+318:101:2:ZL300.max_line_length:line exceeds 100 characters (115)
+347:101:2:ZL300.max_line_length:line exceeds 100 characters (120)
+467:101:2:ZL300.max_line_length:line exceeds 100 characters (123)
+776:101:2:ZL300.max_line_length:line exceeds 100 characters (105)
+778:101:2:ZL300.max_line_length:line exceeds 100 characters (101)
+107:5:3:ZL109.fips_unguarded_crypto:'std.crypto.' bypasses the FIPS crypto_backend seam; route through crypto_backend or annotate '// fips-exempt: non-security'
+265:9:1:ZL009.var_should_be_const:variable 'nonce' is never reassigned; consider using 'const'
+278:9:1:ZL009.var_should_be_const:variable 'tag' is never reassigned; consider using 'const'
+308:9:1:ZL009.var_should_be_const:variable 'nonce' is never reassigned; consider using 'const'
+313:9:1:ZL009.var_should_be_const:variable 'tag' is never reassigned; consider using 'const'
+342:13:1:ZL009.var_should_be_const:variable 'pt_buf' is never reassigned; consider using 'const'
+347:13:1:ZL009.var_should_be_const:variable 'enc_buf' is never reassigned; consider using 'const'
+502:9:1:ZL009.var_should_be_const:variable 'name_buf' is never reassigned; consider using 'const'
+580:9:1:ZL009.var_should_be_const:variable 'wrong_key' is never reassigned; consider using 'const'
+701:9:1:ZL009.var_should_be_const:variable 'wrong_key' is never reassigned; consider using 'const'
+771:9:1:ZL009.var_should_be_const:variable 'bad_blob' is never reassigned; consider using 'const'
+258:50:1:ZL010.magic_number:magic number 4; consider using a named constant
+305:50:1:ZL010.magic_number:magic number 4; consider using a named constant
+531:17:1:ZL010.magic_number:magic number 0x03; consider using a named constant
+531:23:1:ZL010.magic_number:magic number 0x04; consider using a named constant
+531:29:1:ZL010.magic_number:magic number 0x05; consider using a named constant
+531:35:1:ZL010.magic_number:magic number 0x06; consider using a named constant
+531:41:1:ZL010.magic_number:magic number 0x07; consider using a named constant
+532:5:1:ZL010.magic_number:magic number 0x09; consider using a named constant
+532:11:1:ZL010.magic_number:magic number 0x0a; consider using a named constant
+532:17:1:ZL010.magic_number:magic number 0x0b; consider using a named constant
+532:23:1:ZL010.magic_number:magic number 0x0c; consider using a named constant
+532:29:1:ZL010.magic_number:magic number 0x0d; consider using a named constant
+532:35:1:ZL010.magic_number:magic number 0x0e; consider using a named constant
+532:41:1:ZL010.magic_number:magic number 0x0f; consider using a named constant
+533:5:1:ZL010.magic_number:magic number 0x11; consider using a named constant
+533:11:1:ZL010.magic_number:magic number 0x12; consider using a named constant
+533:17:1:ZL010.magic_number:magic number 0x13; consider using a named constant
+533:23:1:ZL010.magic_number:magic number 0x14; consider using a named constant
+533:29:1:ZL010.magic_number:magic number 0x15; consider using a named constant
+533:35:1:ZL010.magic_number:magic number 0x16; consider using a named constant
+533:41:1:ZL010.magic_number:magic number 0x17; consider using a named constant
+533:47:1:ZL010.magic_number:magic number 0x18; consider using a named constant
+534:5:1:ZL010.magic_number:magic number 0x19; consider using a named constant
+534:11:1:ZL010.magic_number:magic number 0x1a; consider using a named constant
+534:17:1:ZL010.magic_number:magic number 0x1b; consider using a named constant
+534:23:1:ZL010.magic_number:magic number 0x1c; consider using a named constant
+534:29:1:ZL010.magic_number:magic number 0x1d; consider using a named constant
+534:35:1:ZL010.magic_number:magic number 0x1e; consider using a named constant
+534:41:1:ZL010.magic_number:magic number 0x1f; consider using a named constant
+583:21:1:ZL010.magic_number:magic number 0xFF; consider using a named constant
+664:41:1:ZL010.magic_number:magic number 0x1e; consider using a named constant
+665:41:1:ZL010.magic_number:magic number 0x1f; consider using a named constant
+703:21:1:ZL010.magic_number:magic number 0xFF; consider using a named constant
+715:44:1:ZL010.magic_number:magic number 36; consider using a named constant
+773:55:1:ZL010.magic_number:magic number 4; consider using a named constant
+773:59:1:ZL010.magic_number:magic number 0xFFFFFFFF; consider using a named constant
+783:23:1:ZL010.magic_number:magic number 0x33; consider using a named constant
+83:1:1:ZL011.missing_doc_comment:public declaration 'EncryptionError' is missing documentation
+506:38:1:ZL502.platform_syscalls:low-level system call 'std.c.' may not be portable; prefer std library abstractions
+205:40:1:ZL603.missing_defer_cleanup:resource '.alloc(' may not be properly cleaned up; consider using defer
+212:36:1:ZL603.missing_defer_cleanup:resource '.alloc(' may not be properly cleaned up; consider using defer
+355:33:1:ZL603.missing_defer_cleanup:resource '.alloc(' may not be properly cleaned up; consider using defer
+362:34:1:ZL603.missing_defer_cleanup:resource '.alloc(' may not be properly cleaned up; consider using defer

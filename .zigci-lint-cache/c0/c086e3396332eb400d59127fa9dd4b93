@@ -1,0 +1,16 @@
+23:9:1:ZL009.var_should_be_const:variable 'i' is never reassigned; consider using 'const'
+25:13:1:ZL009.var_should_be_const:variable 'buf' is never reassigned; consider using 'const'
+37:13:1:ZL009.var_should_be_const:variable 'buf' is never reassigned; consider using 'const'
+51:9:1:ZL009.var_should_be_const:variable 'expected_lsn' is never reassigned; consider using 'const'
+53:13:1:ZL009.var_should_be_const:variable 'e' is never reassigned; consider using 'const'
+88:9:1:ZL009.var_should_be_const:variable 'iter' is never reassigned; consider using 'const'
+91:9:1:ZL009.var_should_be_const:variable 'maybe_entry' is never reassigned; consider using 'const'
+102:9:1:ZL009.var_should_be_const:variable 'tmp' is never reassigned; consider using 'const'
+105:9:1:ZL009.var_should_be_const:variable 'log' is never reassigned; consider using 'const'
+24:17:1:ZL010.magic_number:magic number 10; consider using a named constant
+31:21:1:ZL010.magic_number:magic number 5; consider using a named constant
+32:42:1:ZL010.magic_number:magic number 10; consider using a named constant
+36:17:1:ZL010.magic_number:magic number 20; consider using a named constant
+43:21:1:ZL010.magic_number:magic number 15; consider using a named constant
+44:42:1:ZL010.magic_number:magic number 20; consider using a named constant
+58:42:1:ZL010.magic_number:magic number 21; consider using a named constant

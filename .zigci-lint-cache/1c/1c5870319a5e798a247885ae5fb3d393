@@ -1,0 +1,102 @@
+62:34:3:ZL003.no_empty_catch:empty catch block suppresses errors
+270:83:3:ZL003.no_empty_catch:empty catch block suppresses errors
+298:79:3:ZL003.no_empty_catch:empty catch block suppresses errors
+39:7:1:ZL203.const_snakecase:constant 'COPY_BUF_SIZE' should use snake_case (or PascalCase for types)
+63:101:2:ZL300.max_line_length:line exceeds 100 characters (119)
+70:101:2:ZL300.max_line_length:line exceeds 100 characters (106)
+130:101:2:ZL300.max_line_length:line exceeds 100 characters (114)
+185:101:2:ZL300.max_line_length:line exceeds 100 characters (112)
+188:101:2:ZL300.max_line_length:line exceeds 100 characters (113)
+212:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+218:101:2:ZL300.max_line_length:line exceeds 100 characters (102)
+219:101:2:ZL300.max_line_length:line exceeds 100 characters (127)
+241:101:2:ZL300.max_line_length:line exceeds 100 characters (124)
+249:101:2:ZL300.max_line_length:line exceeds 100 characters (115)
+259:101:2:ZL300.max_line_length:line exceeds 100 characters (115)
+321:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+332:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+339:101:2:ZL300.max_line_length:line exceeds 100 characters (119)
+355:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+367:101:2:ZL300.max_line_length:line exceeds 100 characters (103)
+377:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+384:101:2:ZL300.max_line_length:line exceeds 100 characters (112)
+392:101:2:ZL300.max_line_length:line exceeds 100 characters (107)
+402:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+430:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+440:101:2:ZL300.max_line_length:line exceeds 100 characters (119)
+476:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+487:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+495:101:2:ZL300.max_line_length:line exceeds 100 characters (108)
+498:101:2:ZL300.max_line_length:line exceeds 100 characters (102)
+520:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+532:101:2:ZL300.max_line_length:line exceeds 100 characters (103)
+544:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+551:101:2:ZL300.max_line_length:line exceeds 100 characters (112)
+559:101:2:ZL300.max_line_length:line exceeds 100 characters (107)
+572:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+583:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+590:101:2:ZL300.max_line_length:line exceeds 100 characters (119)
+603:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+621:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+631:101:2:ZL300.max_line_length:line exceeds 100 characters (121)
+638:101:2:ZL300.max_line_length:line exceeds 100 characters (108)
+640:101:2:ZL300.max_line_length:line exceeds 100 characters (102)
+175:5:2:ZL301.max_function_lines:function exceeds 80 lines (135)
+175:5:2:ZL302.max_params:function has too many parameters (7 > 6)
+231:48:2:ZL303.max_nesting:nesting depth exceeds 4 (5)
+103:9:1:ZL009.var_should_be_const:variable 'copy_buf' is never reassigned; consider using 'const'
+104:9:1:ZL009.var_should_be_const:variable 'read_off' is never reassigned; consider using 'const'
+105:9:1:ZL009.var_should_be_const:variable 'write_off' is never reassigned; consider using 'const'
+127:9:1:ZL009.var_should_be_const:variable 'off_in' is never reassigned; consider using 'const'
+184:9:1:ZL009.var_should_be_const:variable 'tmp_name_buf' is never reassigned; consider using 'const'
+198:9:1:ZL009.var_should_be_const:variable 'current_offset' is never reassigned; consider using 'const'
+201:9:1:ZL009.var_should_be_const:variable 'reuse_buf' is never reassigned; consider using 'const'
+211:13:1:ZL009.var_should_be_const:variable 'peek_buf' is never reassigned; consider using 'const'
+218:17:1:ZL009.var_should_be_const:variable 'enc_src' is never reassigned; consider using 'const'
+336:9:1:ZL009.var_should_be_const:variable 'expected_lsn' is never reassigned; consider using 'const'
+421:9:1:ZL009.var_should_be_const:variable 'rec5_buf' is never reassigned; consider using 'const'
+422:9:1:ZL009.var_should_be_const:variable 'rec6_buf' is never reassigned; consider using 'const'
+436:9:1:ZL009.var_should_be_const:variable 'idx' is never reassigned; consider using 'const'
+491:9:1:ZL009.var_should_be_const:variable 'expected_lsn' is never reassigned; consider using 'const'
+494:13:1:ZL009.var_should_be_const:variable 'peek_buf' is never reassigned; consider using 'const'
+587:9:1:ZL009.var_should_be_const:variable 'expected_lsn' is never reassigned; consider using 'const'
+616:9:1:ZL009.var_should_be_const:variable 'tmp_dir' is never reassigned; consider using 'const'
+633:9:1:ZL009.var_should_be_const:variable 'rfs' is never reassigned; consider using 'const'
+635:9:1:ZL009.var_should_be_const:variable 'expected_lsn' is never reassigned; consider using 'const'
+637:13:1:ZL009.var_should_be_const:variable 'peek_buf' is never reassigned; consider using 'const'
+63:110:1:ZL010.magic_number:magic number 0o600; consider using a named constant
+245:65:1:ZL010.magic_number:magic number 12; consider using a named constant
+322:13:1:ZL010.magic_number:magic number 6; consider using a named constant
+336:29:1:ZL010.magic_number:magic number 4; consider using a named constant
+346:42:1:ZL010.magic_number:magic number 6; consider using a named constant
+356:13:1:ZL010.magic_number:magic number 4; consider using a named constant
+378:13:1:ZL010.magic_number:magic number 4; consider using a named constant
+388:42:1:ZL010.magic_number:magic number 3; consider using a named constant
+403:13:1:ZL010.magic_number:magic number 5; consider using a named constant
+423:37:1:ZL010.magic_number:magic number 5; consider using a named constant
+424:37:1:ZL010.magic_number:magic number 6; consider using a named constant
+434:35:1:ZL010.magic_number:magic number 3; consider using a named constant
+434:38:1:ZL010.magic_number:magic number 4; consider using a named constant
+434:41:1:ZL010.magic_number:magic number 5; consider using a named constant
+434:44:1:ZL010.magic_number:magic number 6; consider using a named constant
+447:44:1:ZL010.magic_number:magic number 4; consider using a named constant
+477:13:1:ZL010.magic_number:magic number 6; consider using a named constant
+491:29:1:ZL010.magic_number:magic number 4; consider using a named constant
+509:42:1:ZL010.magic_number:magic number 6; consider using a named constant
+521:13:1:ZL010.magic_number:magic number 4; consider using a named constant
+545:13:1:ZL010.magic_number:magic number 4; consider using a named constant
+555:42:1:ZL010.magic_number:magic number 3; consider using a named constant
+573:13:1:ZL010.magic_number:magic number 6; consider using a named constant
+587:29:1:ZL010.magic_number:magic number 4; consider using a named constant
+595:42:1:ZL010.magic_number:magic number 6; consider using a named constant
+604:13:1:ZL010.magic_number:magic number 4; consider using a named constant
+622:13:1:ZL010.magic_number:magic number 6; consider using a named constant
+635:29:1:ZL010.magic_number:magic number 4; consider using a named constant
+650:42:1:ZL010.magic_number:magic number 6; consider using a named constant
+188:24:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+332:31:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+415:31:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+430:31:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+487:31:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+583:31:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+631:31:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer

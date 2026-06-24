@@ -1,0 +1,12 @@
+44:34:3:ZL003.no_empty_catch:empty catch block suppresses errors
+48:38:3:ZL003.no_empty_catch:empty catch block suppresses errors
+13:11:1:ZL203.const_snakecase:constant 'TMP_NAME_BUF_SIZE' should use snake_case (or PascalCase for types)
+38:101:2:ZL300.max_line_length:line exceeds 100 characters (112)
+45:101:2:ZL300.max_line_length:line exceeds 100 characters (131)
+81:101:2:ZL300.max_line_length:line exceeds 100 characters (160)
+94:101:2:ZL300.max_line_length:line exceeds 100 characters (160)
+106:101:2:ZL300.max_line_length:line exceeds 100 characters (161)
+37:9:1:ZL009.var_should_be_const:variable 'tmp_name_buf' is never reassigned; consider using 'const'
+45:9:1:ZL009.var_should_be_const:variable 'tmp_file' is never reassigned; consider using 'const'
+101:9:1:ZL009.var_should_be_const:variable 'tmp_dir' is never reassigned; consider using 'const'
+45:122:1:ZL010.magic_number:magic number 0o600; consider using a named constant

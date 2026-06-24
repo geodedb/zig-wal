@@ -1,0 +1,99 @@
+15:20:2:ZL204.no_dupe_import:duplicate import of 'policy.zig' (first at line 6)
+60:101:2:ZL300.max_line_length:line exceeds 100 characters (109)
+61:101:2:ZL300.max_line_length:line exceeds 100 characters (109)
+62:101:2:ZL300.max_line_length:line exceeds 100 characters (109)
+77:101:2:ZL300.max_line_length:line exceeds 100 characters (111)
+82:101:2:ZL300.max_line_length:line exceeds 100 characters (115)
+83:101:2:ZL300.max_line_length:line exceeds 100 characters (115)
+84:101:2:ZL300.max_line_length:line exceeds 100 characters (115)
+87:101:2:ZL300.max_line_length:line exceeds 100 characters (107)
+99:101:2:ZL300.max_line_length:line exceeds 100 characters (110)
+100:101:2:ZL300.max_line_length:line exceeds 100 characters (110)
+101:101:2:ZL300.max_line_length:line exceeds 100 characters (110)
+113:101:2:ZL300.max_line_length:line exceeds 100 characters (112)
+115:101:2:ZL300.max_line_length:line exceeds 100 characters (148)
+116:101:2:ZL300.max_line_length:line exceeds 100 characters (148)
+117:101:2:ZL300.max_line_length:line exceeds 100 characters (148)
+118:101:2:ZL300.max_line_length:line exceeds 100 characters (170)
+119:101:2:ZL300.max_line_length:line exceeds 100 characters (170)
+120:101:2:ZL300.max_line_length:line exceeds 100 characters (170)
+127:101:2:ZL300.max_line_length:line exceeds 100 characters (150)
+129:101:2:ZL300.max_line_length:line exceeds 100 characters (117)
+130:101:2:ZL300.max_line_length:line exceeds 100 characters (117)
+133:101:2:ZL300.max_line_length:line exceeds 100 characters (156)
+135:101:2:ZL300.max_line_length:line exceeds 100 characters (117)
+136:101:2:ZL300.max_line_length:line exceeds 100 characters (117)
+139:101:2:ZL300.max_line_length:line exceeds 100 characters (129)
+140:101:2:ZL300.max_line_length:line exceeds 100 characters (142)
+145:101:2:ZL300.max_line_length:line exceeds 100 characters (135)
+146:101:2:ZL300.max_line_length:line exceeds 100 characters (142)
+147:101:2:ZL300.max_line_length:line exceeds 100 characters (147)
+189:101:2:ZL300.max_line_length:line exceeds 100 characters (176)
+190:101:2:ZL300.max_line_length:line exceeds 100 characters (127)
+191:101:2:ZL300.max_line_length:line exceeds 100 characters (127)
+199:101:2:ZL300.max_line_length:line exceeds 100 characters (143)
+200:101:2:ZL300.max_line_length:line exceeds 100 characters (129)
+203:101:2:ZL300.max_line_length:line exceeds 100 characters (167)
+204:101:2:ZL300.max_line_length:line exceeds 100 characters (123)
+207:101:2:ZL300.max_line_length:line exceeds 100 characters (167)
+208:101:2:ZL300.max_line_length:line exceeds 100 characters (123)
+219:101:2:ZL300.max_line_length:line exceeds 100 characters (166)
+220:101:2:ZL300.max_line_length:line exceeds 100 characters (160)
+221:101:2:ZL300.max_line_length:line exceeds 100 characters (160)
+229:101:2:ZL300.max_line_length:line exceeds 100 characters (111)
+230:101:2:ZL300.max_line_length:line exceeds 100 characters (108)
+231:101:2:ZL300.max_line_length:line exceeds 100 characters (108)
+273:101:2:ZL300.max_line_length:line exceeds 100 characters (104)
+127:9:2:ZL302.max_params:function has too many parameters (7 > 6)
+133:9:2:ZL302.max_params:function has too many parameters (7 > 6)
+139:5:2:ZL302.max_params:function has too many parameters (7 > 6)
+145:5:2:ZL302.max_params:function has too many parameters (7 > 6)
+200:45:2:ZL303.max_nesting:nesting depth exceeds 4 (7)
+21:46:1:ZL107.unsafe_pointer_arithmetic:direct pointer arithmetic '.ptr + ' may cause memory safety issues; prefer slice operations
+19:9:1:ZL009.var_should_be_const:variable 'off' is never reassigned; consider using 'const'
+44:13:1:ZL009.var_should_be_const:variable 'd' is never reassigned; consider using 'const'
+66:13:1:ZL009.var_should_be_const:variable 't' is never reassigned; consider using 'const'
+108:13:1:ZL009.var_should_be_const:variable 'prk_arr' is never reassigned; consider using 'const'
+141:13:1:ZL009.var_should_be_const:variable 't' is never reassigned; consider using 'const'
+216:13:1:ZL009.var_should_be_const:variable 'seed' is never reassigned; consider using 'const'
+307:9:1:ZL009.var_should_be_const:variable 'a' is never reassigned; consider using 'const'
+90:38:1:ZL010.magic_number:magic number 255; consider using a named constant
+107:38:1:ZL010.magic_number:magic number 255; consider using a named constant
+15:1:1:ZL011.missing_doc_comment:public declaration 'policy' is missing documentation
+31:1:1:ZL011.missing_doc_comment:public declaration 'Hash' is missing documentation
+32:5:1:ZL011.missing_doc_comment:public declaration 'Error' is missing documentation
+33:5:1:ZL011.missing_doc_comment:public declaration 'digest' is missing documentation
+52:1:1:ZL011.missing_doc_comment:public declaration 'Mac' is missing documentation
+53:5:1:ZL011.missing_doc_comment:public declaration 'Error' is missing documentation
+54:5:1:ZL011.missing_doc_comment:public declaration 'hmac' is missing documentation
+74:1:1:ZL011.missing_doc_comment:public declaration 'Kdf' is missing documentation
+75:5:1:ZL011.missing_doc_comment:public declaration 'Error' is missing documentation
+77:5:1:ZL011.missing_doc_comment:public declaration 'hkdf' is missing documentation
+94:5:1:ZL011.missing_doc_comment:public declaration 'hkdfExpand' is missing documentation
+113:5:1:ZL011.missing_doc_comment:public declaration 'pbkdf2' is missing documentation
+125:1:1:ZL011.missing_doc_comment:public declaration 'Aead' is missing documentation
+126:5:1:ZL011.missing_doc_comment:public declaration 'Error' is missing documentation
+127:5:1:ZL011.missing_doc_comment:public declaration 'seal' is missing documentation
+133:5:1:ZL011.missing_doc_comment:public declaration 'open' is missing documentation
+151:1:1:ZL011.missing_doc_comment:public declaration 'Sig' is missing documentation
+152:5:1:ZL011.missing_doc_comment:public declaration 'Error' is missing documentation
+169:5:1:ZL011.missing_doc_comment:public declaration 'KeyPair' is missing documentation
+172:9:1:ZL011.missing_doc_comment:public declaration 'deinit' is missing documentation
+176:9:1:ZL011.missing_doc_comment:public declaration 'publicBytes' is missing documentation
+187:9:1:ZL011.missing_doc_comment:public declaration 'fromPublicBytes' is missing documentation
+196:9:1:ZL011.missing_doc_comment:public declaration 'fromPrivateBytes' is missing documentation
+215:5:1:ZL011.missing_doc_comment:public declaration 'generate' is missing documentation
+226:5:1:ZL011.missing_doc_comment:public declaration 'sign' is missing documentation
+236:5:1:ZL011.missing_doc_comment:public declaration 'verify' is missing documentation
+259:1:1:ZL011.missing_doc_comment:public declaration 'Kem' is missing documentation
+260:5:1:ZL011.missing_doc_comment:public declaration 'Error' is missing documentation
+263:5:1:ZL011.missing_doc_comment:public declaration 'KeyPair' is missing documentation
+264:9:1:ZL011.missing_doc_comment:public declaration 'deinit' is missing documentation
+269:5:1:ZL011.missing_doc_comment:public declaration 'generate' is missing documentation
+273:5:1:ZL011.missing_doc_comment:public declaration 'encapsulate' is missing documentation
+280:5:1:ZL011.missing_doc_comment:public declaration 'decapsulate' is missing documentation
+289:1:1:ZL011.missing_doc_comment:public declaration 'Csprng' is missing documentation
+290:5:1:ZL011.missing_doc_comment:public declaration 'Error' is missing documentation
+291:5:1:ZL011.missing_doc_comment:public declaration 'bytes' is missing documentation
+21:20:2:ZL500.os_specific_code:Linux-specific code 'std.os.linux' may cause portability issues; consider adding OS detection guards
+67:10:1:ZL603.missing_defer_cleanup:resource '.create(' may not be properly cleaned up; consider using defer

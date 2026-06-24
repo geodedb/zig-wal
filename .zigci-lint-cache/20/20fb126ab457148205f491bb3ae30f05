@@ -1,0 +1,13 @@
+28:11:1:ZL203.const_snakecase:constant 'assertActive' should use snake_case (or PascalCase for types)
+18:35:2:ZL204.no_dupe_import:duplicate import of 'fips' (first at line 11)
+18:56:2:ZL204.no_dupe_import:duplicate import of 'std_shim' (first at line 13)
+17:1:1:ZL011.missing_doc_comment:public declaration 'fips_enabled' is missing documentation
+20:1:1:ZL011.missing_doc_comment:public declaration 'Aead' is missing documentation
+21:1:1:ZL011.missing_doc_comment:public declaration 'Hash' is missing documentation
+22:1:1:ZL011.missing_doc_comment:public declaration 'Mac' is missing documentation
+23:1:1:ZL011.missing_doc_comment:public declaration 'Kdf' is missing documentation
+24:1:1:ZL011.missing_doc_comment:public declaration 'Sig' is missing documentation
+25:1:1:ZL011.missing_doc_comment:public declaration 'Kem' is missing documentation
+26:1:1:ZL011.missing_doc_comment:public declaration 'Csprng' is missing documentation
+27:1:1:ZL011.missing_doc_comment:public declaration 'policy' is missing documentation
+28:1:1:ZL011.missing_doc_comment:public declaration 'assertActive' is missing documentation

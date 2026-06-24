@@ -1,0 +1,33 @@
+57:11:1:ZL203.const_snakecase:constant 'HEADER_SIZE' should use snake_case (or PascalCase for types)
+60:11:1:ZL203.const_snakecase:constant 'CRC_SIZE' should use snake_case (or PascalCase for types)
+63:11:1:ZL203.const_snakecase:constant 'MIN_RECORD_SIZE' should use snake_case (or PascalCase for types)
+66:11:1:ZL203.const_snakecase:constant 'MAX_PAYLOAD_SIZE' should use snake_case (or PascalCase for types)
+74:11:1:ZL203.const_snakecase:constant 'MAX_RECORD_SIZE' should use snake_case (or PascalCase for types)
+86:11:1:ZL203.const_snakecase:constant 'STACK_WRITE_THRESHOLD' should use snake_case (or PascalCase for types)
+440:101:2:ZL300.max_line_length:line exceeds 100 characters (127)
+448:101:2:ZL300.max_line_length:line exceeds 100 characters (127)
+456:101:2:ZL300.max_line_length:line exceeds 100 characters (119)
+215:13:1:ZL009.var_should_be_const:variable 'stack_buf' is never reassigned; consider using 'const'
+262:9:1:ZL009.var_should_be_const:variable 'crc_buf' is never reassigned; consider using 'const'
+320:9:1:ZL009.var_should_be_const:variable 'h' is never reassigned; consider using 'const'
+373:9:1:ZL009.var_should_be_const:variable 'corrupt' is never reassigned; consider using 'const'
+425:9:1:ZL009.var_should_be_const:variable 'tmp' is never reassigned; consider using 'const'
+450:9:1:ZL009.var_should_be_const:variable 'src' is never reassigned; consider using 'const'
+158:34:1:ZL010.magic_number:magic number 12; consider using a named constant
+163:64:1:ZL010.magic_number:magic number 4; consider using a named constant
+301:56:1:ZL010.magic_number:magic number 12; consider using a named constant
+350:42:1:ZL010.magic_number:magic number 42; consider using a named constant
+375:33:1:ZL010.magic_number:magic number 0xFF; consider using a named constant
+390:41:1:ZL010.magic_number:magic number 0x07; consider using a named constant
+391:41:1:ZL010.magic_number:magic number 0x06; consider using a named constant
+392:41:1:ZL010.magic_number:magic number 0x05; consider using a named constant
+393:41:1:ZL010.magic_number:magic number 0x04; consider using a named constant
+394:41:1:ZL010.magic_number:magic number 0x03; consider using a named constant
+410:28:1:ZL010.magic_number:magic number 0xAB; consider using a named constant
+419:45:1:ZL010.magic_number:magic number 0xAB; consider using a named constant
+29:5:1:ZL011.missing_doc_comment:public declaration 'init' is missing documentation
+33:5:1:ZL011.missing_doc_comment:public declaration 'initAt' is missing documentation
+37:5:1:ZL011.missing_doc_comment:public declaration 'readAll' is missing documentation
+44:5:1:ZL011.missing_doc_comment:public declaration 'readPositionalAll' is missing documentation
+114:1:1:ZL011.missing_doc_comment:public declaration 'RecordError' is missing documentation
+448:27:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer

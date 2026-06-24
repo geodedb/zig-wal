@@ -1,0 +1,18 @@
+109:101:2:ZL300.max_line_length:line exceeds 100 characters (125)
+110:101:2:ZL300.max_line_length:line exceeds 100 characters (128)
+111:101:2:ZL300.max_line_length:line exceeds 100 characters (126)
+112:101:2:ZL300.max_line_length:line exceeds 100 characters (134)
+113:101:2:ZL300.max_line_length:line exceeds 100 characters (134)
+114:101:2:ZL300.max_line_length:line exceeds 100 characters (135)
+15:1:1:ZL011.missing_doc_comment:public declaration 'Hash' is missing documentation
+16:1:1:ZL011.missing_doc_comment:public declaration 'Mac' is missing documentation
+17:1:1:ZL011.missing_doc_comment:public declaration 'Kdf' is missing documentation
+18:1:1:ZL011.missing_doc_comment:public declaration 'Aead' is missing documentation
+19:1:1:ZL011.missing_doc_comment:public declaration 'SigAlg' is missing documentation
+42:1:1:ZL011.missing_doc_comment:public declaration 'KemAlg' is missing documentation
+52:1:1:ZL011.missing_doc_comment:public declaration 'hashName' is missing documentation
+62:1:1:ZL011.missing_doc_comment:public declaration 'aeadName' is missing documentation
+68:1:1:ZL011.missing_doc_comment:public declaration 'kdfName' is missing documentation
+74:1:1:ZL011.missing_doc_comment:public declaration 'sigName' is missing documentation
+96:1:1:ZL011.missing_doc_comment:public declaration 'kemName' is missing documentation
+118:1:1:ZL011.missing_doc_comment:public declaration 'isApproved' is missing documentation

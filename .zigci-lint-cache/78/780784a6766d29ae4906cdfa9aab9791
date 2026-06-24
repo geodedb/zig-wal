@@ -1,0 +1,38 @@
+9:4:1:ZL200.fn_camelcase:function 'scenario_io' should use camelCase
+283:101:2:ZL300.max_line_length:line exceeds 100 characters (119)
+284:101:2:ZL300.max_line_length:line exceeds 100 characters (118)
+88:13:1:ZL009.var_should_be_const:variable 'hdr' is never reassigned; consider using 'const'
+157:13:1:ZL009.var_should_be_const:variable 'byte' is never reassigned; consider using 'const'
+192:9:1:ZL009.var_should_be_const:variable 'key' is never reassigned; consider using 'const'
+232:17:1:ZL009.var_should_be_const:variable 'maybe_entry' is never reassigned; consider using 'const'
+249:9:1:ZL009.var_should_be_const:variable 'tmp' is never reassigned; consider using 'const'
+252:9:1:ZL009.var_should_be_const:variable 'key' is never reassigned; consider using 'const'
+287:13:1:ZL009.var_should_be_const:variable 'byte' is never reassigned; consider using 'const'
+296:13:1:ZL009.var_should_be_const:variable 'log' is never reassigned; consider using 'const'
+303:13:1:ZL009.var_should_be_const:variable 'iter' is never reassigned; consider using 'const'
+306:13:1:ZL009.var_should_be_const:variable 'e1' is never reassigned; consider using 'const'
+312:13:1:ZL009.var_should_be_const:variable 'e2' is never reassigned; consider using 'const'
+40:32:1:ZL010.magic_number:magic number 0xDE; consider using a named constant
+40:38:1:ZL010.magic_number:magic number 0xAD; consider using a named constant
+40:44:1:ZL010.magic_number:magic number 0xBE; consider using a named constant
+40:50:1:ZL010.magic_number:magic number 0xEF; consider using a named constant
+40:56:1:ZL010.magic_number:magic number 0xCA; consider using a named constant
+40:62:1:ZL010.magic_number:magic number 0xFE; consider using a named constant
+90:38:1:ZL010.magic_number:magic number 12; consider using a named constant
+94:31:1:ZL010.magic_number:magic number 0xFF; consider using a named constant
+94:40:1:ZL010.magic_number:magic number 10; consider using a named constant
+159:20:1:ZL010.magic_number:magic number 0xFF; consider using a named constant
+213:32:1:ZL010.magic_number:magic number 0xDE; consider using a named constant
+213:38:1:ZL010.magic_number:magic number 0xAD; consider using a named constant
+213:44:1:ZL010.magic_number:magic number 0xBE; consider using a named constant
+213:50:1:ZL010.magic_number:magic number 0xEF; consider using a named constant
+213:56:1:ZL010.magic_number:magic number 0xCA; consider using a named constant
+213:62:1:ZL010.magic_number:magic number 0xFE; consider using a named constant
+224:46:1:ZL010.magic_number:magic number 3; consider using a named constant
+243:46:1:ZL010.magic_number:magic number 4; consider using a named constant
+289:20:1:ZL010.magic_number:magic number 0xFF; consider using a named constant
+37:30:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+84:30:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+152:30:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+210:30:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
+280:30:1:ZL603.missing_defer_cleanup:resource '.openFile(' may not be properly cleaned up; consider using defer
