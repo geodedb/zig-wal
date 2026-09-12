@@ -1,6 +1,6 @@
 .{
     .name = .wal,
-    .version = "0.1.13",
+    .version = "0.1.14",
     .fingerprint = 0x961dd052a6eaa312,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
@@ -9,8 +9,8 @@
             .hash = "thread_pool-0.2.7-11B1BvRneQBnMkDnRbKd76THvZn4ZhDhmlWQw-aziWQm",
         },
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.18#d431d1bb72203f51b6922f3a88093cec854dc050",
-            .hash = "otel-0.1.18-B0v3liP3NQB05N3TveX5FJIiWYYRm0UGCeMZ0P9bi_ha",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.19#d928525c34a4b50c9536b064e601ee45760cbabd",
+            .hash = "otel-0.1.19-B0v3liP3NQDyqyLnDV_6rFYepKA7MNgekcHFstany4dq",
             .lazy = true,
         },
         // FIPS-140-3 backend. Resolved ONLY under -Dfips=true (lazy). Local
