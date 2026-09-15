@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Unreleased]: https://gitlab.com/devnw/zig/wal/-/commits/main
 
+## [0.1.15] - 2026-09-15
+
+### Changed
+
+- Converge grpc_zig v0.1.10 (GAP-0838 diamond sync).
+
 ## [0.1.14] - 2026-09-12
 
 ### Changed
