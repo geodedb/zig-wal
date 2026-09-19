@@ -9,8 +9,8 @@
             .hash = "thread_pool-0.2.7-11B1BvRneQBnMkDnRbKd76THvZn4ZhDhmlWQw-aziWQm",
         },
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.20#ab8f0fbc25c91258c10a80e33244f720269da18c",
-            .hash = "otel-0.1.20-B0v3liX3NQCMB306IYynRvLR0G9aOSHJPDQ9XrSLU18I",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.21#7e4261c3db1ba166384d5df5ff95576a2a62f4b0",
+            .hash = "otel-0.1.20-B0v3liX3NQBBDic7ltvLZtBWaKCYjca_83Q3WwlLyfL_",
             .lazy = true,
         },
         // FIPS-140-3 backend. Resolved ONLY under -Dfips=true (lazy). Local
