@@ -187,3 +187,10 @@ test-fips:
 	OPENSSL_CONF=$(or $(OPENSSL_PREFIX),/usr/local/ssl)/ssl/openssl.cnf zig build test-integration -Dfips=true -Dopenssl_path=$(or $(OPENSSL_PREFIX),/usr/local/ssl) --summary all
 
 test-dual: test test-fips
+
+.PHONY: deps
+# Build + install the latest OpenSSL 3.x with the FIPS provider into
+# $(OPENSSL_PREFIX) (default /usr/local/ssl). Required before test-dual /
+# the CI test-fips job. Idempotent; re-runs upgrade in place.
+deps:
+	OPENSSL_PREFIX=$(or $(OPENSSL_PREFIX),/usr/local/ssl) ./scripts/install-openssl-fips.sh
