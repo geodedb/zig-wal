@@ -5,6 +5,7 @@
 default:
   tags:
     - company
+    - linux
 
 include:
   # Security scanning
