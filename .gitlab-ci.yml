@@ -229,14 +229,23 @@ bench-regression:
 fips-deps:
   stage: build
   image: debian:bookworm-slim
+  # Pin to x86: fips-deps hands a compiled OpenSSL to test-fips as an
+  # artifact, so both jobs must run on the same CPU architecture.
+  tags: [company, linux, x86]
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends build-essential perl curl xz-utils python3 ca-certificates
-    - *install-zig
+    # wget + sudo + gnupg: required by scripts/install-openssl-fips.sh (copy
+    # of devnw/zig/fips' script; it fetches/verifies OpenSSL via wget + gpg and
+    # installs via sudo, a no-op wrapper as root in the container).
+    - apt-get update && apt-get install -y --no-install-recommends build-essential perl curl wget sudo gnupg xz-utils ca-certificates
   script:
-    - make deps   # builds latest OpenSSL + FIPS provider into /usr/local/ssl
+    # GitLab artifacts must live under $CI_PROJECT_DIR: /usr/local/ssl cannot
+    # be uploaded, so build into a project-relative prefix. OPENSSL_VERSION is
+    # pinned because the script's "latest 3.x" resolver no longer finds a 3.x
+    # tag now that 4.x is the latest release (same pin as devnw/zig/fts-storage).
+    - OPENSSL_PREFIX="$CI_PROJECT_DIR/.openssl-fips" OPENSSL_VERSION="3.6.3" make deps
   artifacts:
     paths:
-      - /usr/local/ssl
+      - .openssl-fips/
     expire_in: 1 day
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -245,10 +254,11 @@ fips-deps:
 test-fips:
   stage: test
   image: debian:bookworm-slim
+  tags: [company, linux, x86]
   before_script:
     - *install-zig
   script:
-    - OPENSSL_CONF=/usr/local/ssl/ssl/openssl.cnf zig build test -Dfips=true -Dopenssl_path=/usr/local/ssl --summary all
+    - OPENSSL_CONF="$CI_PROJECT_DIR/.openssl-fips/ssl/openssl.cnf" zig build test -Dfips=true -Dopenssl_path="$CI_PROJECT_DIR/.openssl-fips" --summary all
   needs:
     - fips-deps
   rules:
