@@ -5,12 +5,12 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .thread_pool = .{
-            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.7#54a2ddda1a356c32ba2e4df70691459570fb6339",
-            .hash = "thread_pool-0.2.7-11B1BvRneQBnMkDnRbKd76THvZn4ZhDhmlWQw-aziWQm",
+            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.8#2161d8e77beb6f9d6d8664b4406c739ef3a6cc81",
+            .hash = "thread_pool-0.2.8-11B1BrrSeQD3WHNJ-oyNkrfcHLp5AOW1Zgr4QTGu7pb4",
         },
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.19#d928525c34a4b50c9536b064e601ee45760cbabd",
-            .hash = "otel-0.1.19-B0v3liP3NQDyqyLnDV_6rFYepKA7MNgekcHFstany4dq",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.24#2e5e5e4609c8f452c75846c91a59de76417e85f4",
+            .hash = "otel-0.1.24-B0v3liX3NQBKK7oqRuCRfgu0FIwR6nNQOGpIjs8YoCrY",
             .lazy = true,
         },
         // FIPS-140-3 backend. Resolved ONLY under -Dfips=true (lazy). Local
@@ -23,8 +23,8 @@
         // Zig 0.16 rejects absolute .path values, so this is the build-root-
         // relative path to /home/benji/src/devnw/zig/fips.
         .fips = .{
-            .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.1#4041d9cfdeadcab665644b3f4d3362c276f94bb7",
-            .hash = "fips-0.1.1-1wf3na01BwC3voljVu61_0g6DXp6BCedXrq4QMuMeQBq",
+            .url = "git+https://gitlab.com/devnw/zig/fips.git?ref=v0.1.2#2db29e0add6e2e6111b1f27c0fa72afd366f9092",
+            .hash = "fips-0.1.2-1wf3naNnBwDb429FDp9qyF1irQ7otgjMxUafGKxjYTMG",
             .lazy = true,
         },
     },
