@@ -19,3 +19,23 @@ paths = [
 # id = "custom-rule"
 # description = "Custom secret pattern"
 # regex = '''pattern'''
+
+# scripts/install-openssl-fips.sh (copy of devnw/zig/fips' installer) pins the
+# public OpenSSL release signing-key fingerprints, which generic-api-key flags.
+# Same narrowly scoped exception as devnw/zig/fips (SONNY-4789): only the
+# generic-api-key rule, only the exact installer path, and only these two exact
+# values (AND), so the same values elsewhere and any other value in the
+# installer are still reported. Path+value, not commit fingerprints: CI scans a
+# shallow clone, so the finding commit changes from push to push.
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Public OpenSSL release signing-key fingerprints in the installer"
+condition = "AND"
+paths = ['''^scripts/install-openssl-fips\.sh$''']
+regexTarget = "secret"
+regexes = [
+    '''^B146647E45A7B33947AB226B2A2C87D161692D40$''',
+    '''^BA5473A2B0587B07FB27CF2D216094DFD0CB81EF$''',
+]
