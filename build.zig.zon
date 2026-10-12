@@ -1,16 +1,16 @@
 .{
     .name = .wal,
-    .version = "0.1.19",
+    .version = "0.1.20",
     .fingerprint = 0x961dd052a6eaa312,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .thread_pool = .{
-            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.8#2161d8e77beb6f9d6d8664b4406c739ef3a6cc81",
-            .hash = "thread_pool-0.2.8-11B1BrrSeQD3WHNJ-oyNkrfcHLp5AOW1Zgr4QTGu7pb4",
+            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.9#1d7275da020a43588c4f1885f7f725d5e8ce079e",
+            .hash = "thread_pool-0.2.9-11B1Bqf7eQDfHhrQAkHk0e2ABigRBFNkFEAmc8t9raZe",
         },
         .otel = .{
-            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.25#271cdfbfde389767886c6ba3656e584b80d54979",
-            .hash = "otel-0.1.25-B0v3lir4NQD1YLvBQTNUl4C63ehXde1RR_aRyO-bbzlY",
+            .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.26#36b56fa3cce4161b8c3db60b16ca986234f0cfd5",
+            .hash = "otel-0.1.26-B0v3ltusNQDirCpbgd4p9Pjotmhyr1lL54hcsVrYwKtj",
             .lazy = true,
         },
         // FIPS-140-3 backend. Resolved ONLY under -Dfips=true (lazy). Local
@@ -35,5 +35,8 @@
         "LICENSE",
         "NOTICE",
         "README.md",
+        "bench",
+        "examples",
+        "tests",
     },
 }

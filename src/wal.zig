@@ -1494,8 +1494,13 @@ test "init: tightens permissions on existing files to 0o600 (SEC-0021)" {
     defer tmp.cleanup();
 
     // Create a file with world-readable permissions (simulating pre-SEC-0015 file).
-    const f = try tmp.dir.createFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{ .read = true, .permissions = std.Io.File.Permissions.fromMode(0o644) });
-    f.close(std.Io.Threaded.global_single_threaded.io());
+    {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        const f = try tmp.dir.createFile(io, "wal.log", .{ .read = true, .permissions = std.Io.File.Permissions.fromMode(0o644) });
+        defer f.close(io);
+        // Creation honors umask; explicitly establish the old-file fixture.
+        try f.setPermissions(io, std.Io.File.Permissions.fromMode(0o644));
+    }
 
     // Verify file is world-readable.
     const stat_before = try tmp.dir.statFile(std.Io.Threaded.global_single_threaded.io(), "wal.log", .{});

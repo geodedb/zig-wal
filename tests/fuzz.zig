@@ -8,9 +8,8 @@
 //! arbitrary byte sequences to surface crashes, undefined behaviour, or
 //! panics caused by malformed input.
 //!
-//! When run under `zig build test-fuzz` the fuzz engine generates random
-//! inputs.  In regular `zig build test` mode the tests execute the seed
-//! corpus deterministically and pass immediately.
+//! `zig build test-fuzz` runs deterministic seed cases; add `--fuzz` for
+//! coverage-guided generation. Inputs are bounded to 64 KiB per invocation.
 
 const std = @import("std");
 const wal = @import("wal");
@@ -33,7 +32,9 @@ const fuzz_key: [32]u8 = .{
 
 test "fuzz: record.deserialize rejects arbitrary bytes without crashing" {
     try std.testing.fuzz(.{}, struct {
-        fn testOne(_: @TypeOf(.{}), input: []const u8) !void {
+        fn testOne(_: @TypeOf(.{}), smith: *std.testing.Smith) !void {
+            var storage: [64 * 1024]u8 = undefined;
+            const input = storage[0..smith.slice(&storage)];
             // Must not crash regardless of input — errors are expected and fine.
             _ = record.deserialize(input) catch return;
         }
@@ -42,7 +43,9 @@ test "fuzz: record.deserialize rejects arbitrary bytes without crashing" {
 
 test "fuzz: encryption.decryptRecord rejects arbitrary bytes without crashing" {
     try std.testing.fuzz(.{}, struct {
-        fn testOne(_: @TypeOf(.{}), input: []const u8) !void {
+        fn testOne(_: @TypeOf(.{}), smith: *std.testing.Smith) !void {
+            var storage: [64 * 1024]u8 = undefined;
+            const input = storage[0..smith.slice(&storage)];
             const allocator = std.testing.allocator;
             const key = fuzz_key;
             const result = encryption.decryptRecord(allocator, &key, input) catch return;
@@ -54,7 +57,9 @@ test "fuzz: encryption.decryptRecord rejects arbitrary bytes without crashing" {
 
 test "fuzz: encryption.decryptRecordInPlace rejects arbitrary bytes without crashing" {
     try std.testing.fuzz(.{}, struct {
-        fn testOne(_: @TypeOf(.{}), input: []const u8) !void {
+        fn testOne(_: @TypeOf(.{}), smith: *std.testing.Smith) !void {
+            var storage: [64 * 1024]u8 = undefined;
+            const input = storage[0..smith.slice(&storage)];
             const allocator = std.testing.allocator;
             const key = fuzz_key;
             // decryptRecordInPlace needs a mutable buffer — duplicate.
@@ -68,7 +73,9 @@ test "fuzz: encryption.decryptRecordInPlace rejects arbitrary bytes without cras
 
 test "fuzz: encryption.isEncrypted handles arbitrary bytes without crashing" {
     try std.testing.fuzz(.{}, struct {
-        fn testOne(_: @TypeOf(.{}), input: []const u8) !void {
+        fn testOne(_: @TypeOf(.{}), smith: *std.testing.Smith) !void {
+            var storage: [64 * 1024]u8 = undefined;
+            const input = storage[0..smith.slice(&storage)];
             // Pure function, must never crash.
             _ = encryption.isEncrypted(input);
         }

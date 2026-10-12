@@ -107,8 +107,8 @@ wget -q "${BASE_URL}/${TARBALL}"
 #   Previous (still used for some 3.x series releases):
 #     BA54 73A2 B058 7B07 FB27  CF2D 2160 94DF D0CB 81EF
 # ---------------------------------------------------------------------------
-OPENSSL_RELEASE_KEY_CURRENT="B146647E45A7B33947AB226B2A2C87D161692D40"
-OPENSSL_RELEASE_KEY_PREVIOUS="BA5473A2B0587B07FB27CF2D216094DFD0CB81EF"
+OPENSSL_RELEASE_KEY_CURRENT="B146647E45A7B33947AB226B2A2C87D161692D40"  # gitleaks:allow -- public OpenSSL release-signing key fingerprint, not a secret
+OPENSSL_RELEASE_KEY_PREVIOUS="BA5473A2B0587B07FB27CF2D216094DFD0CB81EF"  # gitleaks:allow -- public OpenSSL release-signing key fingerprint, not a secret
 
 SHA256_VERIFIED=no
 GPG_VERIFIED=no
@@ -139,22 +139,15 @@ if command -v gpg >/dev/null 2>&1; then
     # the field (some older series use the previous key) can be verified.
     gpg --batch --keyserver hkps://keys.openpgp.org \
       --recv-keys "${OPENSSL_RELEASE_KEY_CURRENT}" "${OPENSSL_RELEASE_KEY_PREVIOUS}" 2>/dev/null || true
-    # Require the signature to be from one of the two pinned fingerprints.
-    GPG_SIGNER="$(gpg --verify "${TARBALL}.asc" "${TARBALL}" 2>&1)" || {
+    # Match GnuPG's verified primary fingerprint, including signatures from
+    # certified signing subkeys. Human diagnostics format fingerprints with
+    # spaces and primarily name the subkey, so they are not a trust API.
+    bash "${SCRIPT_DIR}/verify-release-signature.sh" "${TARBALL}.asc" "${TARBALL}" \
+      "${OPENSSL_RELEASE_KEY_CURRENT}" "${OPENSSL_RELEASE_KEY_PREVIOUS}" || {
       log "ERROR: GPG signature verification FAILED for ${TARBALL}"
       exit 1
     }
-    # Confirm the signing key is one of the two pinned fingerprints.
-    if echo "${GPG_SIGNER}" | grep -qE "${OPENSSL_RELEASE_KEY_CURRENT}|${OPENSSL_RELEASE_KEY_PREVIOUS}"; then
-      GPG_VERIFIED=yes
-    else
-      log "ERROR: GPG signature is valid but was NOT made by a pinned OpenSSL release key"
-      log "       Expected one of:"
-      log "         ${OPENSSL_RELEASE_KEY_CURRENT}"
-      log "         ${OPENSSL_RELEASE_KEY_PREVIOUS}"
-      log "       Got: ${GPG_SIGNER}"
-      exit 1
-    fi
+    GPG_VERIFIED=yes
   else
     log "WARNING: could not download ${TARBALL}.asc — GPG check skipped"
     if [ "${REQUIRE_GPG:-}" = "1" ]; then

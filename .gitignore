@@ -70,3 +70,8 @@ __pycache__/
 
 # OpenSSL FIPS build from `make deps` in CI (project-relative prefix)
 .openssl-fips/
+
+# Source regression tests for hook isolation.
+!scripts/test_hook_env.py
+
+!scripts/test_release_signature.py
