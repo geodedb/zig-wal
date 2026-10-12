@@ -27,6 +27,9 @@ include:
       # Create the GitLab Release with CI_JOB_TOKEN: the group GITLAB_TOKEN
       # lacks api scope, so the default glab path fails with 403 (SONNY-2447).
       release_auth: job_token
+      # x86: create-release runs the amd64-only release-cli image; on the ARM
+      # Lab runners it fails with "exec format error" (uuid v0.1.8, otel v0.1.25).
+      tags: ["company", "linux", "x86"]
   - component: gitlab.com/devnw/ci-catalog/zig-version-tag-check@v1.55.8
 
 variables:
