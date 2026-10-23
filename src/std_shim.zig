@@ -14,18 +14,11 @@
 const std = @import("std");
 pub const policy = @import("policy.zig");
 
-fn randomBytes(out: []u8) void {
-    // Linux getrandom syscall; the non-fips shim's CSPRNG.
-    var off: usize = 0;
-    while (off < out.len) {
-        const rc = std.os.linux.getrandom(out.ptr + off, out.len - off, 0);
-        const n: isize = @bitCast(rc);
-        if (n < 0) {
-            // EINTR/EAGAIN: retry; anything else: fall back to a re-seed.
-            continue;
-        }
-        off += @intCast(n);
-    }
+fn randomBytes(out: []u8) error{OpensslFailure}!void {
+    // Use the host's OS entropy implementation; raw Linux syscalls trap on
+    // macOS, and permanent entropy failures must not become an infinite loop.
+    std.Io.Threaded.global_single_threaded.io().randomSecure(out) catch
+        return error.OpensslFailure;
 }
 
 pub const Hash = struct {
@@ -282,7 +275,7 @@ pub const Sig = struct {
 
     pub fn generate(alg: policy.SigAlg) Error!KeyPair {
         var seed: [64]u8 = undefined;
-        randomBytes(&seed);
+        try randomBytes(&seed);
         return switch (alg) {
             .ed25519 => .{ .inner = .{ .ed25519 = Ed25519.KeyPair.generateDeterministic(seed[0..Ed25519.KeyPair.seed_length].*) catch return error.OpensslFailure } },
             .ecdsa_p256 => .{ .inner = .{ .p256 = P256.KeyPair.generateDeterministic(seed[0..P256.KeyPair.seed_length].*) catch return error.OpensslFailure } },
@@ -357,7 +350,7 @@ pub const Kem = struct {
 pub const Csprng = struct {
     pub const Error = error{OpensslFailure};
     pub fn bytes(out: []u8) Error!void {
-        randomBytes(out);
+        try randomBytes(out);
     }
 };
 
