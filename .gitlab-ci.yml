@@ -330,3 +330,66 @@ workflow:
       auto_cancel:
         on_job_failure: all
     - when: always
+
+# Exercise OS entropy natively: cross-compilation cannot detect a wrong syscall.
+test-portable-entropy-macos:
+  stage: test
+  image: macos-26-xcode-26
+  tags: [saas-macos-medium-m1]
+  timeout: 10m
+  interruptible: true
+  needs: []
+  cache:
+    key: "zig-${ZIG_VERSION}-macos-aarch64"
+    paths:
+      - zig-${ZIG_VERSION}/
+  before_script:
+    - |
+      if [ ! -x "zig-${ZIG_VERSION}/zig" ] || [ "$(zig-${ZIG_VERSION}/zig version)" != "$ZIG_VERSION" ]; then
+        ARCH=$(uname -m)
+        case "$(uname -s)" in
+          Linux) ZIG_OS=linux ;;
+          Darwin) ZIG_OS=macos ;;
+          *) echo "Unsupported operating system"; exit 1 ;;
+        esac
+        case "$ARCH" in
+          x86_64)  ZIG_ARCH="x86_64" ;;
+          aarch64) ZIG_ARCH="aarch64" ;;
+          arm64)   ZIG_ARCH="aarch64" ;;
+          *)       echo "Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        MAJOR=$(echo "$ZIG_VERSION" | cut -d. -f1)
+        MINOR=$(echo "$ZIG_VERSION" | cut -d. -f2)
+        if [ "$MAJOR" -eq 0 ] && [ "$MINOR" -lt 15 ]; then
+          ARCHIVE_NAME="zig-${ZIG_OS}-${ZIG_ARCH}-${ZIG_VERSION}"
+        else
+          ARCHIVE_NAME="zig-${ZIG_ARCH}-${ZIG_OS}-${ZIG_VERSION}"
+        fi
+        TARBALL="${ARCHIVE_NAME}.tar.xz"
+        INDEX_FILE=$(mktemp)
+        curl -fsSL "https://ziglang.org/download/index.json" -o "${INDEX_FILE}"
+        EXPECTED_HASH=$(ZIG_VER="${ZIG_VERSION}" ZIG_ARCH_KEY="${ZIG_ARCH}-${ZIG_OS}" ZIG_IDX="${INDEX_FILE}" \
+          python3 -c "
+      import json, os, sys
+      idx = json.load(open(os.environ['ZIG_IDX']))
+      pkg = idx.get(os.environ['ZIG_VER'], {}).get(os.environ['ZIG_ARCH_KEY'], {})
+      h = pkg.get('shasum', '')
+      if not h: sys.exit('SHA-256 not found for ' + os.environ['ZIG_VER'] + '/' + os.environ['ZIG_ARCH_KEY'])
+      print(h)
+      ")
+        rm -f "${INDEX_FILE}"
+        curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${TARBALL}" -o "${TARBALL}"
+        ZIG_ARCHIVE="${TARBALL}" ZIG_SHA256="${EXPECTED_HASH}" python3 -c 'import hashlib, os; p=os.environ["ZIG_ARCHIVE"]; actual=hashlib.sha256(open(p, "rb").read()).hexdigest(); assert actual == os.environ["ZIG_SHA256"], "Zig archive checksum mismatch"'
+        tar -xJf "${TARBALL}"
+        rm -rf "zig-${ZIG_VERSION}"
+        mv "${ARCHIVE_NAME}" "zig-${ZIG_VERSION}"
+        rm -f "${TARBALL}"
+      fi
+    - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
+    - zig version
+  script:
+    - zig test -lc --dep std_shim -Mroot=tests/portable_entropy_test.zig -Mstd_shim=src/std_shim.zig
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
