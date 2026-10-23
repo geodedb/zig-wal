@@ -21,6 +21,7 @@
 //!    block-copy the rest with a 64 KB buffer, fsync, close, rename.
 
 const std = @import("std");
+const file_ops = @import("file_ops.zig");
 const record = @import("record.zig");
 const encryption = @import("encryption.zig");
 const atomic = @import("atomic.zig");
@@ -60,7 +61,7 @@ fn createTempFile(dir: std.Io.Dir, tmp_name: []const u8) !std.Io.File {
     const io = std.Io.Threaded.global_single_threaded.io();
     // Note: A narrow TOCTOU window exists between delete and create (SEC-0011).
     dir.deleteFile(io, tmp_name) catch {};
-    return dir.createFile(io, tmp_name, .{ .truncate = true, .permissions = std.Io.File.Permissions.fromMode(0o600) });
+    return dir.createFile(io, tmp_name, .{ .truncate = true, .permissions = file_ops.private_permissions });
 }
 
 /// Sync, close, and atomically rename a temporary file over the target.
