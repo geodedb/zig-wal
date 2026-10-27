@@ -39,8 +39,10 @@ include:
 
 variables:
   ZIG_VERSION: "0.16.0"
+  ZIG_GLOBAL_CACHE_DIR: "$CI_PROJECT_DIR/.zig-global-cache"
 
 stages:
+  - prepare
   - lint
   - build
   - test
@@ -90,38 +92,74 @@ stages:
   - export PATH="$PWD/zig-${ZIG_VERSION}:$PATH"
   - zig version
 
+# One job writes the verified toolchain cache; each build mode owns its
+# compiler cache. Keep downloaded packages inside the cached project tree.
+.zig-cache: &zig-cache
+  - key: "zig-toolchain-${ZIG_VERSION}-linux-amd64"
+    paths: ["zig-${ZIG_VERSION}/"]
+    policy: pull
+  - key:
+      prefix: "zig-compile-${ZIG_VERSION}-linux-amd64-${CI_JOB_NAME}"
+      files: [build.zig.zon]
+    paths: [.zig-cache/, .zig-global-cache/, zig-pkg/]
+
+.trim-zig-cache: &trim-zig-cache
+  - |
+    size=$(du -sm .zig-cache .zig-global-cache zig-pkg 2>/dev/null | awk '{sum += $1} END {print sum+0}')
+    if [ "$size" -gt 2048 ]; then rm -rf .zig-cache .zig-global-cache zig-pkg; fi
+
+prepare-zig:
+  stage: prepare
+  image: debian:bookworm-slim
+  script:
+    - *install-zig
+  cache:
+    key: "zig-toolchain-${ZIG_VERSION}-linux-amd64"
+    paths: ["zig-${ZIG_VERSION}/"]
+    policy: pull-push
+
 # Override zig-format component to use the project's ZIG_VERSION.
 # The v1.2.1 component defaults to 0.14.0 and does not accept a version input.
 zig-format:
+  cache:
+    key: "zig-toolchain-${ZIG_VERSION}-linux-amd64"
+    paths: ["zig-${ZIG_VERSION}/"]
+    policy: pull
   before_script:
     - *install-zig
 
 # Build job
 build:
+  needs: [prepare-zig]
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: build
   image: debian:bookworm-slim
   before_script:
     - *install-zig
   script:
-    - zig build check
-    # Compile the public example so API drift in examples/basic.zig fails CI
-    # rather than rotting silently (QA-0077).
-    - zig build example
+    # Native unit tests already compile the library; only build the public example here (QA-0077).
+    - zig build example -j2 --summary all
+    # Compile all unit tests for Windows to catch platform API regressions.
+    - zig build check -Dtarget=x86_64-windows-gnu -j2 --summary all
 
 # Unit tests
 test:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: test
   image: debian:bookworm-slim
   before_script:
     - *install-zig
   script:
-    - zig build test --summary all
-    - zig build test-fuzz -j2 --summary all
+    - zig build test test-fuzz -j2 --summary all
   needs:
     - build
 
 # Integration tests
 test-integration:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: test
   image: debian:bookworm-slim
   before_script:
@@ -133,6 +171,8 @@ test-integration:
 
 # Release optimization tests
 test-release-safe:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: test
   image: debian:bookworm-slim
   before_script:
@@ -144,6 +184,8 @@ test-release-safe:
 
 # ReleaseFast tests
 test-release-fast:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: test
   image: debian:bookworm-slim
   before_script:
@@ -154,6 +196,8 @@ test-release-fast:
     - build
 
 test-integration-release-safe:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: test
   image: debian:bookworm-slim
   before_script:
@@ -164,6 +208,8 @@ test-integration-release-safe:
     - build
 
 test-integration-release-fast:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: test
   image: debian:bookworm-slim
   before_script:
@@ -175,6 +221,8 @@ test-integration-release-fast:
 
 # ReleaseSmall tests
 test-release-small:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: test
   image: debian:bookworm-slim
   before_script:
@@ -192,6 +240,8 @@ test-release-small:
 #   rc=124: timeout reached (expected in CI) - pass
 #   other : fuzzer found a crash - fail the job
 fuzz:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: fuzz
   image: debian:bookworm-slim
   before_script:
@@ -215,6 +265,8 @@ fuzz:
 # Benchmark regression detection.
 # Results are stored as artifacts for trend analysis.
 bench-regression:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: fuzz
   image: debian:bookworm-slim
   before_script:
@@ -263,11 +315,12 @@ fips-deps:
       - .openssl-fips/
     expire_in: 1 day
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
 
 test-fips:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: test
   image: debian:bookworm-slim
   tags: [company, linux, x86]
@@ -278,8 +331,7 @@ test-fips:
   needs:
     - fips-deps
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
 
 # SONNY-4778: tools must not redirect Git operations into this worktree.
@@ -293,6 +345,8 @@ hook-env-regression:
     - python3 scripts/test_hook_env.py
 
 test-source-package:
+  cache: *zig-cache
+  after_script: *trim-zig-cache
   stage: test
   image: debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
   tags: [company, linux, x86]
@@ -323,9 +377,9 @@ workflow:
         on_new_commit: none
     # SRE-194: validation pipelines fail fast on the first blocking job failure;
     # these rules admit only what the next rule already admits.
+    # Handwritten validation jobs use branch pipelines. Suppress partial MR duplicates.
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-      auto_cancel:
-        on_job_failure: all
+      when: never
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
       auto_cancel:
         on_job_failure: all
@@ -390,6 +444,5 @@ test-portable-entropy-macos:
   script:
     - zig test -lc --dep std_shim -Mroot=tests/portable_entropy_test.zig -Mstd_shim=src/std_shim.zig
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'

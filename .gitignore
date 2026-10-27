@@ -75,3 +75,7 @@ __pycache__/
 !scripts/test_hook_env.py
 
 !scripts/test_release_signature.py
+
+# Project-local CI caches
+.zig-global-cache/
+zig-0.16.0/

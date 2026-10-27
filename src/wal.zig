@@ -18,6 +18,8 @@ const encryption = @import("encryption.zig");
 const checkpoint_mod = @import("checkpoint.zig");
 const observability = @import("observability");
 
+const file_ops = @import("file_ops.zig");
+
 /// Scoped logger for the WAL engine. Used to surface startup data loss
 /// (recovery truncation) that would otherwise be silent (QA-0079).
 const wal_log = std.log.scoped(.wal);
@@ -210,10 +212,10 @@ pub const WriteAheadLog = struct {
         errdefer allocator.free(owned_filename);
 
         // Open existing file, or create a new one with read+write access.
-        // New files get 0o600 permissions (owner-only) for defense-in-depth (SEC-0015).
+        // New POSIX files get owner-only mode 0o600 (SEC-0015).
         const io = std.Io.Threaded.global_single_threaded.io();
         const file = dir.openFile(io, filename, .{ .mode = .read_write }) catch |err| switch (err) {
-            error.FileNotFound => try dir.createFile(io, filename, .{ .read = true, .permissions = std.Io.File.Permissions.fromMode(0o600) }),
+            error.FileNotFound => try dir.createFile(io, filename, .{ .read = true, .permissions = file_ops.private_permissions }),
             else => return err,
         };
         errdefer file.close(std.Io.Threaded.global_single_threaded.io());
@@ -222,7 +224,7 @@ pub const WriteAheadLog = struct {
         // Files created before the SEC-0015 fix may have world-readable
         // permissions. This is best-effort — fails silently on non-POSIX
         // platforms or when the caller is not the file owner.
-        file.setPermissions(io, std.Io.File.Permissions.fromMode(0o600)) catch {};
+        if (file_ops.has_posix_permissions) file.setPermissions(io, file_ops.private_permissions) catch {};
 
         // Recover WAL state: try checkpoint-accelerated path first if enabled,
         // then fall back to full scan (PERF-0013). The outer recovery scan is
@@ -511,7 +513,7 @@ pub const WriteAheadLog = struct {
         if (!self.options.manual_sync) {
             self.appends_since_sync +|= 1; // Saturating add (SEC-0031).
             if (self.appends_since_sync >= self.options.sync_every_n) {
-                try std.posix.fdatasync(self.file.handle);
+                try file_ops.syncData(self.file);
                 self.appends_since_sync = 0;
             }
         }
@@ -773,7 +775,7 @@ pub const WriteAheadLog = struct {
         if (!self.options.manual_sync) {
             self.appends_since_sync +|= @intCast(payloads.len); // Saturating add (SEC-0031).
             if (self.appends_since_sync >= self.options.sync_every_n) {
-                try std.posix.fdatasync(self.file.handle);
+                try file_ops.syncData(self.file);
                 self.appends_since_sync = 0;
             }
         }
@@ -783,7 +785,7 @@ pub const WriteAheadLog = struct {
 
     /// Explicitly flush all buffered writes to durable storage.
     ///
-    /// Uses `fdatasync` (metadata-update not needed for appends).
+    /// Uses POSIX `fdatasync`, or the Windows durable file flush.
     /// Use this when `options.manual_sync` is `true`.
     /// Thread-safe: acquires internal mutex.
     pub fn sync(self: *WriteAheadLog) !void {
@@ -794,7 +796,7 @@ pub const WriteAheadLog = struct {
         self.mu.lockUncancelable(std.Io.Threaded.global_single_threaded.io());
         defer self.mu.unlock(std.Io.Threaded.global_single_threaded.io());
         if (self.poisoned) return error.WalPoisoned;
-        try std.posix.fdatasync(self.file.handle);
+        try file_ops.syncData(self.file);
         self.appends_since_sync = 0;
         ok = true;
     }
@@ -935,7 +937,7 @@ pub const WriteAheadLog = struct {
         // fdatasync (not full fsync): setLength's size change is data-reachability
         // metadata, which fdatasync flushes; this matches every other sync site
         // in the WAL (PERF-0024).
-        try std.posix.fdatasync(self.file.handle);
+        try file_ops.syncData(self.file);
         _ = std.c.lseek(self.file.handle, @intCast(valid_end), 0);
 
         self.file_end = valid_end;
@@ -1489,6 +1491,7 @@ test "iterator deinit: encryption key zeroized (SEC-0002)" {
 }
 
 test "init: tightens permissions on existing files to 0o600 (SEC-0021)" {
+    if (!file_ops.has_posix_permissions) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -7,6 +7,7 @@
 //! preventing partial writes from leaving the file in a corrupt state.
 
 const std = @import("std");
+const file_ops = @import("file_ops.zig");
 
 /// Maximum buffer size for deriving temporary filenames ("{filename}.tmp").
 /// Shared by atomic.zig and compaction.zig (QA-0056).
@@ -42,7 +43,7 @@ pub fn atomicWriteFile(dir: std.Io.Dir, filename: []const u8, data: []const u8) 
     // race-free solution would require O_TMPFILE+linkat (Linux-specific),
     // which is not available in Zig's std.fs API (SEC-0011).
     dir.deleteFile(io, tmp_name) catch {};
-    var tmp_file = try dir.createFile(io, tmp_name, .{ .truncate = true, .permissions = std.Io.File.Permissions.fromMode(0o600) });
+    var tmp_file = try dir.createFile(io, tmp_name, .{ .truncate = true, .permissions = file_ops.private_permissions });
     errdefer {
         tmp_file.close(io);
         dir.deleteFile(io, tmp_name) catch {};
