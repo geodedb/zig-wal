@@ -388,8 +388,7 @@ workflow:
 # Exercise OS entropy natively: cross-compilation cannot detect a wrong syscall.
 test-portable-entropy-macos:
   stage: test
-  image: macos-26-xcode-26
-  tags: [saas-macos-medium-m1]
+  tags: [dedicated, macos, arm]
   timeout: 10m
   interruptible: true
   needs: []
