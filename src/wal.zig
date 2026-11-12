@@ -1695,6 +1695,54 @@ test "checkpoint: deleted after compaction (PERF-0013)" {
     try std.testing.expect(checkpoint_mod.readCheckpoint(tmp.dir, "wal.log") != null);
 }
 
+test "checkpoint: compaction that empties the log keeps the LSN anchor without clean shutdown (SONNY-6424)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Compact every record away, then crash: no deinit, so no sidecar rewrite
+    // on the way out. The emptied file carries no LSN of its own.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        _ = try wal.append("one");
+        _ = try wal.append("two");
+        _ = try wal.append("three");
+        try wal.compact(3);
+        try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+        wal.file.close(std.Io.Threaded.global_single_threaded.io());
+        allocator.free(wal.filename);
+    }
+
+    const ckpt = checkpoint_mod.readCheckpoint(tmp.dir, "wal.log") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 3), ckpt.last_lsn);
+    try std.testing.expectEqual(@as(u64, 0), ckpt.valid_end);
+    try std.testing.expectEqual(@as(u64, 0), ckpt.last_record_start);
+
+    // The reopened log continues the sequence; crash again after appending.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+        try std.testing.expectEqual(@as(u64, 4), try wal.append("four"));
+        try std.testing.expectEqual(@as(u64, 5), try wal.append("five"));
+        wal.file.close(std.Io.Threaded.global_single_threaded.io());
+        allocator.free(wal.filename);
+    }
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+    defer wal.deinit();
+    try std.testing.expectEqual(@as(u64, 5), wal.currentLsn());
+    var iter = try wal.iterator(3);
+    defer iter.deinit();
+    var e4 = (try iter.next()) orelse return error.TestUnexpectedResult;
+    defer e4.deinit();
+    try std.testing.expectEqual(@as(u64, 4), e4.lsn);
+    try std.testing.expectEqualSlices(u8, "four", e4.payload);
+    var e5 = (try iter.next()) orelse return error.TestUnexpectedResult;
+    defer e5.deinit();
+    try std.testing.expectEqual(@as(u64, 5), e5.lsn);
+    try std.testing.expect((try iter.next()) == null);
+}
+
 test "checkpoint: falls back to full scan when disabled" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
