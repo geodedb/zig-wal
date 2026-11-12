@@ -71,7 +71,9 @@ fn finalizeTempFile(dir: std.Io.Dir, tmp: std.Io.File, tmp_name: []const u8, fil
     try tmp.sync(std.Io.Threaded.global_single_threaded.io());
     try dir.rename(tmp_name, dir, filename, std.Io.Threaded.global_single_threaded.io());
     tmp.close(std.Io.Threaded.global_single_threaded.io());
-    // Directory fsync omitted — see SEC-0020 comment in atomic.zig.
+    // Directory fsync omitted here (SEC-0020). When compaction empties the
+    // log, WriteAheadLog.compact rewrites the checkpoint sidecar through
+    // atomic.atomicWriteFile, whose atomic.syncDir fsyncs this same directory.
 }
 
 // ============================================================================
