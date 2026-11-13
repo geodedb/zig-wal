@@ -7,6 +7,7 @@
 //! preventing partial writes from leaving the file in a corrupt state.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const file_ops = @import("file_ops.zig");
 
 /// Maximum buffer size for deriving temporary filenames ("{filename}.tmp").
@@ -19,8 +20,9 @@ pub const TMP_NAME_BUF_SIZE = 256;
 ///   1. Creating (or truncating) a temporary file "`filename`.tmp" in `dir`
 ///   2. Writing all `data` to the temporary file
 ///   3. fsync-ing the temporary file to flush OS buffers to disk
-///   4. Closing the temporary file
-///   5. Renaming "`filename`.tmp" to `filename` (atomic on POSIX via renameat)
+///   4. Renaming "`filename`.tmp" to `filename` (atomic on POSIX via renameat)
+///      and closing the temporary file
+///   5. fsync-ing `dir` so the rename itself is durable (`syncDir`)
 ///
 /// The temp file is derived from `filename` by appending ".tmp", so two
 /// concurrent `atomicWriteFile` calls for different filenames in the same
@@ -58,14 +60,21 @@ pub fn atomicWriteFile(dir: std.Io.Dir, filename: []const u8, data: []const u8) 
     // SEC-0035.
     try dir.rename(tmp_name, dir, filename, io);
     tmp_file.close(io);
-    // Note: A directory fsync after rename would make the directory entry fully
-    // durable on all filesystems. However, Zig's std.Io.Dir opens directories
-    // with O_PATH, which does not support fsync. Opening a separate read-only
-    // fd for the directory is not possible without knowing the directory's
-    // absolute path (which the caller does not provide). On ext4 with the
-    // default data=ordered mode, directory renames are journaled and durable
-    // without an explicit fsync. On data=writeback or non-journaling
-    // filesystems, a narrow durability gap exists (SEC-0020).
+    try syncDir(dir);
+}
+
+/// fsync `dir` so a rename into it is durable, not only the renamed file's
+/// contents (SEC-0020, SONNY-6424). `dir` itself may be an O_PATH handle
+/// (the std.Io.Dir default), on which fsync fails with EBADF, so open "."
+/// beneath it with `.iterate = true` to get a real O_RDONLY|O_DIRECTORY fd.
+/// Windows has no directory fsync; NTFS journals the rename.
+pub fn syncDir(dir: std.Io.Dir) !void {
+    if (builtin.os.tag == .windows) return;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var real_dir = try dir.openDir(io, ".", .{ .iterate = true });
+    defer real_dir.close(io);
+    const dir_file = std.Io.File{ .handle = real_dir.handle, .flags = .{ .nonblocking = false } };
+    try dir_file.sync(io);
 }
 
 // ============================================================================
@@ -83,6 +92,18 @@ test "atomicWriteFile: creates file with correct contents" {
     defer std.testing.allocator.free(read_back);
 
     try std.testing.expectEqualStrings(content, read_back);
+}
+
+test "syncDir: fsyncs a directory opened with the default (O_PATH) handle (SEC-0020)" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try tmp_dir.dir.createDirPath(io, "sub");
+    var sub = try tmp_dir.dir.openDir(io, "sub", .{});
+    defer sub.close(io);
+    try syncDir(sub);
+    try atomicWriteFile(sub, "f.dat", "x");
 }
 
 test "atomicWriteFile: overwrites existing file" {

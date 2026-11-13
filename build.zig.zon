@@ -1,6 +1,6 @@
 .{
     .name = .wal,
-    .version = "0.1.22",
+    .version = "0.1.23",
     .fingerprint = 0x961dd052a6eaa312,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

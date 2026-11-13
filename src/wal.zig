@@ -810,6 +810,11 @@ pub const WriteAheadLog = struct {
     /// If compaction fails the file handle is reopened so the WAL remains
     /// usable, and the original error is propagated.
     ///
+    /// With `options.checkpoint`, a compaction that removes every record
+    /// rewrites the checkpoint sidecar with `current_lsn` so the sequence
+    /// survives a restart without `deinit` (SONNY-6424); otherwise the stale
+    /// sidecar is deleted.
+    ///
     /// If the file handle cannot be reopened after either a failed or
     /// successful compaction, the WAL is marked poisoned and subsequent
     /// operations will return `error.WalPoisoned` (SEC-0008).
@@ -861,9 +866,33 @@ pub const WriteAheadLog = struct {
         self.bytes_since_compact = 0;
         self.appends_since_sync = 0; // finalizeTempFile already fsynced (QA-0036)
 
-        // Invalidate the checkpoint — the file layout changed (PERF-0013).
+        // The file layout changed, so the old checkpoint is stale (PERF-0013).
+        // A log that still holds records carries its LSN in them: drop the
+        // sidecar. An EMPTIED log carries no LSN at all, and the sidecar is the
+        // only place its sequence number survives a restart that skips
+        // `deinit` (a crash, or a process exiting without closing). Rewrite it
+        // with the empty-log anchor instead of deleting it, or the next `init`
+        // would number from 0 again (SONNY-6424). A crash between the
+        // compaction rename above and this write still loses the anchor;
+        // callers that keep their own frontier must re-anchor on open.
         if (self.options.checkpoint) {
-            checkpoint_mod.deleteCheckpoint(self.dir, self.filename);
+            if (result.records_kept == 0) {
+                checkpoint_mod.writeCheckpoint(self.dir, self.filename, .{
+                    .last_lsn = self.current_lsn,
+                    .valid_end = 0,
+                    .record_count = 0, // never trusted, see deinit (QA-0069)
+                    .last_record_start = 0,
+                }) catch |err| {
+                    wal_log.warn(
+                        "compaction emptied '{s}' but rewriting its checkpoint sidecar failed: {s}; " ++
+                            "a restart without a clean shutdown will number this log from 0 instead of {d}",
+                        .{ self.filename, @errorName(err), self.current_lsn + 1 },
+                    );
+                    checkpoint_mod.deleteCheckpoint(self.dir, self.filename);
+                };
+            } else {
+                checkpoint_mod.deleteCheckpoint(self.dir, self.filename);
+            }
         }
         ok = true;
     }
@@ -1693,6 +1722,54 @@ test "checkpoint: deleted after compaction (PERF-0013)" {
 
     // After deinit, a fresh checkpoint should be written.
     try std.testing.expect(checkpoint_mod.readCheckpoint(tmp.dir, "wal.log") != null);
+}
+
+test "checkpoint: compaction that empties the log keeps the LSN anchor without clean shutdown (SONNY-6424)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Compact every record away, then crash: no deinit, so no sidecar rewrite
+    // on the way out. The emptied file carries no LSN of its own.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        _ = try wal.append("one");
+        _ = try wal.append("two");
+        _ = try wal.append("three");
+        try wal.compact(3);
+        try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+        wal.file.close(std.Io.Threaded.global_single_threaded.io());
+        allocator.free(wal.filename);
+    }
+
+    const ckpt = checkpoint_mod.readCheckpoint(tmp.dir, "wal.log") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 3), ckpt.last_lsn);
+    try std.testing.expectEqual(@as(u64, 0), ckpt.valid_end);
+    try std.testing.expectEqual(@as(u64, 0), ckpt.last_record_start);
+
+    // The reopened log continues the sequence; crash again after appending.
+    {
+        var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+        try std.testing.expectEqual(@as(u64, 3), wal.currentLsn());
+        try std.testing.expectEqual(@as(u64, 4), try wal.append("four"));
+        try std.testing.expectEqual(@as(u64, 5), try wal.append("five"));
+        wal.file.close(std.Io.Threaded.global_single_threaded.io());
+        allocator.free(wal.filename);
+    }
+
+    var wal = try WriteAheadLog.init(allocator, tmp.dir, "wal.log", .{ .checkpoint = true });
+    defer wal.deinit();
+    try std.testing.expectEqual(@as(u64, 5), wal.currentLsn());
+    var iter = try wal.iterator(3);
+    defer iter.deinit();
+    var e4 = (try iter.next()) orelse return error.TestUnexpectedResult;
+    defer e4.deinit();
+    try std.testing.expectEqual(@as(u64, 4), e4.lsn);
+    try std.testing.expectEqualSlices(u8, "four", e4.payload);
+    var e5 = (try iter.next()) orelse return error.TestUnexpectedResult;
+    defer e5.deinit();
+    try std.testing.expectEqual(@as(u64, 5), e5.lsn);
+    try std.testing.expect((try iter.next()) == null);
 }
 
 test "checkpoint: falls back to full scan when disabled" {
