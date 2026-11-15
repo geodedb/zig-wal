@@ -134,6 +134,7 @@ pub fn build(b: *std.Build) void {
         "tests/scenarios/encryption.zig",
         "tests/scenarios/caller_lsn.zig",
         "tests/scenarios/recovery_safety.zig",
+        "tests/scenarios/compaction_safety.zig",
     };
     for (scenario_files) |scenario_path| {
         const scenario_tests = b.addTest(.{
