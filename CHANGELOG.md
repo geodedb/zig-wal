@@ -19,6 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Unreleased]: https://gitlab.com/devnw/zig/wal/-/commits/main
 
+## [0.1.25] - 2026-11-15
+
+### Fixed
+
+- `truncateAfter` no longer cuts away records it is asked to keep
+  (SONNY-6628). It truncated wherever its validated scan stopped, so a
+  damaged record before the last record with LSN <= `after_lsn` made it
+  silently drop the valid records after the damage. Damage anywhere mid-log
+  also turned a no-op request into a cut. It now cuts only at a proven
+  boundary and otherwise fails closed, leaving the file and the WAL's state
+  untouched, with the same errors as `init` and `compact`:
+  `error.WalEncryptionMismatch`, `error.WalAuthFailed` or
+  `error.WalCorrupted`. Damage lying entirely past the cut point, and a torn
+  tail, are still removed.
+
+### Changed
+
+- `truncateAfter` can now return the three `wal.RecoveryError` errors.
+
 ## [0.1.24] - 2026-11-15
 
 ### Fixed
