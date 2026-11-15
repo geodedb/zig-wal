@@ -13,6 +13,7 @@ const std = @import("std");
 const tp = @import("thread_pool");
 const record = @import("record.zig");
 const recovery_mod = @import("recovery.zig");
+const recovery_classify = @import("recovery_classify.zig");
 const compaction = @import("compaction.zig");
 const encryption = @import("encryption.zig");
 const checkpoint_mod = @import("checkpoint.zig");
@@ -87,6 +88,15 @@ pub const Options = struct {
     /// be constructed with `max_submitter_queues >= 1` (the library's
     /// default of 0 disables registerSubmitter entirely).
     thread_pool: ?*tp.ThreadPool = null,
+
+    /// Opt-in point-in-time recovery (SONNY-6620). By default `init` refuses
+    /// to open a WAL whose first bad record has valid records after it
+    /// (`error.WalCorrupted`), because truncating there would drop them.
+    /// When `true`, such a WAL is opened up to the last valid record before
+    /// the bad one and everything from the bad record onward is truncated.
+    /// Salvage requires at least one valid record before the bad one and never
+    /// applies to `error.WalEncryptionMismatch` or `error.WalAuthFailed`.
+    salvage_corrupt_records: bool = false,
 };
 
 // ============================================================================
@@ -195,8 +205,17 @@ pub const WriteAheadLog = struct {
     // -------------------------------------------------------------------------
 
     /// Open (or create) the WAL file at `dir/filename`, recover state from any
-    /// existing records, truncate any trailing corruption, and position the
-    /// file cursor ready for the next append.
+    /// existing records, truncate a torn tail, and position the file cursor
+    /// ready for the next append.
+    ///
+    /// Recovery fails closed rather than truncate data it cannot read
+    /// (SONNY-6620). The file is left untouched when `init` returns:
+    /// - `error.WalEncryptionMismatch` — the WAL holds records of the other
+    ///   key mode (plaintext WAL opened with a key, encrypted WAL opened
+    ///   without one, or plaintext records inside an encrypted WAL);
+    /// - `error.WalAuthFailed` — no record authenticates under the key;
+    /// - `error.WalCorrupted` — a corrupt record has valid records after it.
+    ///   `Options.salvage_corrupt_records` opts into truncating there instead.
     ///
     /// The returned `WriteAheadLog` owns the open file handle; call `deinit`
     /// when done.
@@ -219,12 +238,6 @@ pub const WriteAheadLog = struct {
             else => return err,
         };
         errdefer file.close(std.Io.Threaded.global_single_threaded.io());
-
-        // Tighten permissions on existing files to owner-only (SEC-0021).
-        // Files created before the SEC-0015 fix may have world-readable
-        // permissions. This is best-effort — fails silently on non-POSIX
-        // platforms or when the caller is not the file owner.
-        if (file_ops.has_posix_permissions) file.setPermissions(io, file_ops.private_permissions) catch {};
 
         // Recover WAL state: try checkpoint-accelerated path first if enabled,
         // then fall back to full scan (PERF-0013). The outer recovery scan is
@@ -301,29 +314,63 @@ pub const WriteAheadLog = struct {
             replay_span.setIntAttribute("wal.replay.start_lsn", 0) catch {};
             replay_span.setIntAttribute("wal.replay.end_lsn", @intCast(info.last_lsn)) catch {};
         }
+
+        // The scan stops at the first record it cannot accept, which is not
+        // necessarily a torn tail: a key-mode mismatch or a wrong key decodes
+        // zero records, and a corrupt record mid-log hides valid records after
+        // it. Classify the stop point read-only and fail closed, leaving the
+        // file untouched, unless only a genuine torn tail (or an opted-in
+        // salvage) would be dropped (SONNY-6620).
+        const recovery_io = std.Io.Threaded.global_single_threaded.io();
+        const file_len = try file.length(recovery_io);
+        if (file_len > info.valid_end) {
+            const verdict = recovery_classify.classifyStop(
+                allocator,
+                file,
+                file_len,
+                if (options.encryption_key) |*key| key else null,
+                info,
+                options.salvage_corrupt_records,
+            ) catch |err| {
+                wal_log.warn(
+                    "recovery of '{s}' refused: {s} at byte {d} of {d} ({d} valid record(s) up to LSN {d} precede it); the file was not modified",
+                    .{ filename, @errorName(err), info.valid_end, file_len, info.record_count, info.last_lsn },
+                );
+                return err;
+            };
+            // Surface startup data loss: silent truncation is undiagnosable
+            // (QA-0079).
+            wal_log.warn(
+                "recovery of '{s}' discarded {d} trailing byte(s) beyond the last valid record " ++
+                    "(kept {d} record(s) up to LSN {d}; valid_end={d}, file size was {d}); {s}",
+                .{
+                    filename,
+                    file_len - info.valid_end,
+                    info.record_count,
+                    info.last_lsn,
+                    info.valid_end,
+                    file_len,
+                    switch (verdict) {
+                        .torn_tail => "torn tail: no valid record follows",
+                        .salvage => "salvage: valid records after a corrupt record were dropped",
+                    },
+                },
+            );
+        }
         replay_ok = true;
 
-        // Surface startup data loss: if recovery stopped before the physical
-        // end of file, trailing records were discarded (torn write, CRC/AEAD
-        // failure, or non-monotonic LSN). Silent truncation makes this
-        // undiagnosable, so log the byte delta at warn level (QA-0079).
-        const recovery_io = std.Io.Threaded.global_single_threaded.io();
-        if (file.stat(recovery_io)) |st| {
-            if (st.size > info.valid_end) {
-                wal_log.warn(
-                    "recovery of '{s}' discarded {d} trailing byte(s) beyond the last valid record " ++
-                        "(kept {d} record(s) up to LSN {d}; valid_end={d}, file size was {d}); " ++
-                        "likely a torn write, CRC/AEAD failure, or non-monotonic LSN",
-                    .{ filename, st.size - info.valid_end, info.record_count, info.last_lsn, info.valid_end, st.size },
-                );
-            }
-        } else |_| {}
+        // Tighten permissions on existing files to owner-only (SEC-0021).
+        // Files created before the SEC-0015 fix may have world-readable
+        // permissions. This is best-effort — fails silently on non-POSIX
+        // platforms or when the caller is not the file owner. Done only once
+        // recovery has accepted the file, so a refused open changes nothing.
+        if (file_ops.has_posix_permissions) file.setPermissions(io, file_ops.private_permissions) catch {};
 
         // Truncate any bytes beyond the last valid record (torn writes, etc.).
         try file.setLength(recovery_io, info.valid_end);
 
         // Position cursor at the write tail for streaming writes.
-        _ = std.c.lseek(file.handle, @intCast(info.valid_end), 0);
+        try file_ops.seekTo(file, info.valid_end);
 
         return WriteAheadLog{
             .allocator = allocator,
@@ -810,6 +857,13 @@ pub const WriteAheadLog = struct {
     /// If compaction fails the file handle is reopened so the WAL remains
     /// usable, and the original error is propagated.
     ///
+    /// Compaction validates every record first and fails closed, leaving the
+    /// file untouched, if any byte is not part of a valid record: the log may
+    /// have been damaged since `init` validated it (SONNY-6620). It returns
+    /// `error.WalEncryptionMismatch`, `error.WalAuthFailed` or
+    /// `error.WalCorrupted`, as `init` does; reopening the WAL then reports or,
+    /// for a torn tail, truncates the damage.
+    ///
     /// With `options.checkpoint`, a compaction that removes every record
     /// rewrites the checkpoint sidecar with `current_lsn` so the sequence
     /// survives a restart without `deinit` (SONNY-6424); otherwise the stale
@@ -911,8 +965,13 @@ pub const WriteAheadLog = struct {
             self.poisoned = true;
             return;
         };
-        // Position cursor at write tail for streaming writes.
-        _ = std.c.lseek(self.file.handle, @intCast(self.file_end), 0);
+        // Position cursor at write tail for streaming writes. A cursor left
+        // elsewhere would misplace the next append, so poison on failure
+        // (closing the new fd keeps the SEC-0037 invariant).
+        file_ops.seekTo(self.file, self.file_end) catch {
+            self.file.close(std.Io.Threaded.global_single_threaded.io());
+            self.poisoned = true;
+        };
     }
 
     /// Remove all records with LSN > `after_lsn` by truncating the WAL tail.
@@ -967,7 +1026,13 @@ pub const WriteAheadLog = struct {
         // metadata, which fdatasync flushes; this matches every other sync site
         // in the WAL (PERF-0024).
         try file_ops.syncData(self.file);
-        _ = std.c.lseek(self.file.handle, @intCast(valid_end), 0);
+        // The file is already truncated; with the cursor unknown the next
+        // append could land off the record boundary, so poison on failure.
+        file_ops.seekTo(self.file, valid_end) catch |err| {
+            self.file.close(io);
+            self.poisoned = true;
+            return err;
+        };
 
         self.file_end = valid_end;
         self.current_lsn = info.last_lsn;

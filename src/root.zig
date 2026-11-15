@@ -27,6 +27,11 @@
 pub const WriteAheadLog = @import("wal.zig").WriteAheadLog;
 pub const Options = @import("wal.zig").Options;
 
+/// Errors `WriteAheadLog.init` returns instead of truncating data it cannot
+/// read: `WalEncryptionMismatch`, `WalAuthFailed`, `WalCorrupted`
+/// (SONNY-6620). The WAL file is left untouched on each of them.
+pub const RecoveryError = @import("recovery_classify.zig").RecoveryError;
+
 /// Atomically write data to a file using temp+fsync+rename.
 pub const atomicWriteFile = @import("atomic.zig").atomicWriteFile;
 
@@ -68,6 +73,7 @@ test {
     _ = @import("wal.zig");
     _ = @import("iterator.zig");
     _ = @import("recovery.zig");
+    _ = @import("recovery_classify.zig");
     _ = @import("compaction.zig");
     _ = @import("encryption.zig");
     _ = @import("atomic.zig");

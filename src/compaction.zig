@@ -5,13 +5,16 @@
 //!
 //! Uses a bulk-copy optimisation: because LSNs are monotonically increasing,
 //! once the first record that must be kept is located we can block-copy the
-//! remainder of the file without parsing each record individually.
+//! remainder of the file without re-reading it record by record. The scan
+//! itself validates every record first (SONNY-6620).
 //!
 //! ## Algorithm
 //!
 //! 1. Open the source file read-only.
-//! 2. Scan forward reading only record headers (12 bytes each), seeking past
-//!    payload + CRC without parsing them.
+//! 2. Scan forward validating every record exactly as recovery does (CRC,
+//!    AES-GCM tag, LSN monotonicity). If any byte up to end of file is not
+//!    part of a valid record, fail closed and leave the file untouched
+//!    (SONNY-6620).
 //! 3. Remember the file offset of the first record whose LSN > `up_to_lsn`.
 //! 4. If no such record exists → write an empty temp file and rename it over
 //!    the original (all records removed).
@@ -25,6 +28,8 @@ const file_ops = @import("file_ops.zig");
 const record = @import("record.zig");
 const encryption = @import("encryption.zig");
 const atomic = @import("atomic.zig");
+const recovery = @import("recovery.zig");
+const recovery_classify = @import("recovery_classify.zig");
 
 // Guard: plaintext path reinterprets peek buffer as header (QA-0035).
 comptime {
@@ -167,14 +172,15 @@ fn zeroCopyTransfer(src: std.Io.File, dst: std.Io.File, src_offset: u64) !u64 {
 /// are already above the watermark the file is left untouched and a
 /// `CompactResult` reflecting the current state is returned.
 ///
-/// **CRC validation is intentionally skipped during scanning (SEC-0027).**
-/// The recovery module (`recovery.recover` / `recoverWithKey`) validates
-/// every record's CRC on WAL open and truncates the file at the first
-/// invalid record. Compaction only runs after recovery, so all records
-/// in the file are known-good. Re-validating CRCs here would double the
-/// I/O cost without security benefit. Encrypted records still get
-/// implicit integrity verification via the AES-GCM authentication tag
-/// during decryption in the scan phase.
+/// Every record is validated before anything is written (SONNY-6620; this
+/// replaces SEC-0027's header-only plaintext scan). Recovery validates the
+/// log only when it is opened, and a partial scan used to rewrite the log as
+/// empty or carry a bad record forward. Compaction fails closed, leaving the
+/// file untouched, when any byte up to end of file is not part of a valid
+/// record: `error.WalEncryptionMismatch` for a record of the other key mode,
+/// otherwise `error.WalCorrupted` (or `error.WalAuthFailed` when no record
+/// authenticates). A compaction therefore never keeps fewer valid records than
+/// the log holds above the watermark.
 pub fn compact(
     allocator: std.mem.Allocator,
     dir: std.Io.Dir,
@@ -192,76 +198,25 @@ pub fn compact(
     defer src.close(std.Io.Threaded.global_single_threaded.io());
 
     // ---- Scan phase ---------------------------------------------------------
-    // Walk every record, tracking the offset of the first kept record.
-    // Peek at DETECT_PEEK_SIZE bytes to distinguish encrypted from plaintext records (QA-0014).
+    // Validate every record with the recovery scan (CRC, AEAD, LSN
+    // monotonicity, SEC-0038 mode check) and find where the valid records
+    // cross the watermark. Recovery only validated the log when it was opened;
+    // it can be damaged since. If any byte is not part of a valid record,
+    // refuse: rewriting from a partial scan would drop the valid records after
+    // the bad one, or carry the bad one into the new log (SONNY-6620).
 
-    var first_kept_offset: ?u64 = null;
-    var records_kept: u64 = 0;
-    // Track file offset manually instead of getPos() syscall per record (PERF-0018).
-    var current_offset: u64 = 0;
-
-    // Reusable buffer for encrypted record reads (PERF-0016).
-    var reuse_buf: ?[]u8 = null;
-    defer if (reuse_buf) |buf| {
-        encryption.secureZero(buf); // SEC-0029
-        allocator.free(buf);
-    };
-
-    while (true) {
-        const offset = current_offset;
-
-        // Read DETECT_PEEK_SIZE bytes to detect the record type.
-        var peek_buf: [encryption.DETECT_PEEK_SIZE]u8 = undefined;
-        const peek_n = try src.readPositionalAll(std.Io.Threaded.global_single_threaded.io(), &peek_buf, current_offset);
-        if (peek_n < encryption.DETECT_PEEK_SIZE) break; // EOF or torn header
-
-        if (encryption_key != null and encryption.isEncrypted(&peek_buf)) {
-            // ── Encrypted record path (QA-0002: shared reader, PERF-0016: reuse buffer) ──
-            // FileSource positioned after the peek bytes already read.
-            var enc_src = record.FileSource.initAt(src, current_offset + encryption.DETECT_PEEK_SIZE);
-            const blob_result = try encryption.readEncryptedBlobReuse(allocator, &enc_src, &peek_buf, &reuse_buf) orelse break;
-            // No per-record defer — reuse_buf freed once after the loop (PERF-0016).
-
-            // Decrypt in-place to extract LSN — avoids extra allocation (PERF-0003).
-            const key = encryption_key.?;
-            const plaintext = encryption.decryptRecordInPlace(key, blob_result.blob) catch break;
-
-            if (plaintext.len < record.HEADER_SIZE) break; // corrupt inner record
-            const lsn = std.mem.readInt(u64, plaintext[0..8], .little);
-
-            if (lsn > up_to_lsn) {
-                records_kept += 1;
-                if (first_kept_offset == null) {
-                    first_kept_offset = offset;
-                }
-            }
-            current_offset += blob_result.total_on_disk;
-        } else if (encryption_key != null) {
-            // SEC-0038: encryption key is configured but record lacks magic
-            // bytes — reject to prevent plaintext record injection.
-            break;
-        } else {
-            // ── Plaintext record path (no encryption key) ────────────────────
-            // peek_buf contains the 12-byte header already consumed.
-            const hdr = record.HeaderInfo{
-                .lsn = std.mem.readInt(u64, peek_buf[0..8], .little),
-                .payload_len = std.mem.readInt(u32, peek_buf[8..12], .little),
-            };
-
-            // Reject unreasonably large records (SEC-0004).
-            if (@as(usize, hdr.payload_len) + record.HEADER_SIZE + record.CRC_SIZE > record.MAX_RECORD_SIZE) break;
-
-            if (hdr.lsn > up_to_lsn) {
-                records_kept += 1;
-                if (first_kept_offset == null) {
-                    first_kept_offset = offset;
-                }
-            }
-
-            // Advance offset past payload + CRC (positional I/O, no seek needed).
-            current_offset += @as(u64, record.HEADER_SIZE) + @as(u64, hdr.payload_len) + @as(u64, record.CRC_SIZE);
-        }
+    const file_len = try src.length(std.Io.Threaded.global_single_threaded.io());
+    var split = recovery.Split{ .up_to_lsn = up_to_lsn };
+    const info = try recovery.scanSplitWithKey(allocator, src, encryption_key, &split);
+    if (info.valid_end != file_len) {
+        // Prefer the specific diagnosis (e.g. a plaintext record inside an
+        // encrypted WAL). Salvage is never applied here, and a torn tail is
+        // still refused: only `init` may truncate.
+        _ = try recovery_classify.classifyStop(allocator, src, file_len, encryption_key, info, false);
+        return error.WalCorrupted;
     }
+    const first_kept_offset = split.first_kept_offset;
+    const records_kept = split.records_kept;
 
     // ---- Decision phase -----------------------------------------------------
 

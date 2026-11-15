@@ -130,7 +130,7 @@ test "crash: completely empty file after creation" {
     try std.testing.expect((try iter.next()) == null);
 }
 
-test "crash: corrupt CRC in middle of file, records after corruption lost" {
+test "crash: corrupt CRC in middle of file fails closed; salvage keeps the prefix (SONNY-6620)" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -160,9 +160,17 @@ test "crash: corrupt CRC in middle of file, records after corruption lost" {
         try f.writePositionalAll(scenario_io(), &byte, record2_payload_offset);
     }
 
-    // Reopen — recovery stops at the corrupt record; only record 1 survives.
+    // Reopen — record 3 is valid after the corrupt record 2, so this is not a
+    // torn tail. Recovery refuses rather than drop record 3, and leaves the
+    // file as it was.
+    const size_before = try tmp.dir.statFile(scenario_io(), "wal", .{});
+    try std.testing.expectError(error.WalCorrupted, wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{}));
+    const size_after = try tmp.dir.statFile(scenario_io(), "wal", .{});
+    try std.testing.expectEqual(size_before.size, size_after.size);
+
+    // Opt-in salvage: point-in-time recovery up to the corrupt record.
     {
-        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{ .salvage_corrupt_records = true });
         defer log.deinit();
 
         try std.testing.expectEqual(@as(u64, 1), log.currentLsn());

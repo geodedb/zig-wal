@@ -1,12 +1,12 @@
 .{
     .name = .wal,
-    .version = "0.1.23",
+    .version = "0.1.24",
     .fingerprint = 0x961dd052a6eaa312,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .thread_pool = .{
-            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.10#698805259aa15131b14cac6798a9e95c64861797",
-            .hash = "thread_pool-0.2.10-11B1BgIlegC4g-vLCPiNdFo1QpYxROwDPX1U5erWrVTB",
+            .url = "git+https://gitlab.com/devnw/zig/thread-pool.git?ref=v0.2.11#666b7ac0cc8b92d5773df5e79ea4fd421bd77e99",
+            .hash = "thread_pool-0.2.11-11B1Bk2GegC5mn18xNrkmF0lMrgrWqijO7PXmftrkuSe",
         },
         .otel = .{
             .url = "git+https://gitlab.com/devnw/zig/otel.git?ref=v0.1.28#e56f1c1fe9385c8cc0d93ec118eb5538a23d2966",

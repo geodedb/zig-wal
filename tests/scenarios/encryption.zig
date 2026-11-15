@@ -199,22 +199,18 @@ test "encryption: plaintext records rejected when reopened with key (SEC-0038)" 
         try std.testing.expectEqual(@as(u64, 3), log.currentLsn());
     }
 
-    // Phase 2: Reopen with encryption key — recovery rejects all plaintext
-    // records (SEC-0038), so LSN resets to 0. New encrypted appends start
-    // from LSN 1.
+    // Phase 2: Reopen with encryption key — recovery does not accept the
+    // plaintext records (SEC-0038), and it must not wipe them either: the
+    // open fails with WalEncryptionMismatch and the file is kept (SONNY-6620).
+    try std.testing.expectError(error.WalEncryptionMismatch, wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
+        .encryption_key = key,
+    }));
+
+    // Phase 3: the plaintext records are all still there.
     {
-        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{
-            .encryption_key = key,
-        });
+        var log = try wal.WriteAheadLog.init(allocator, tmp.dir, "wal", .{});
         defer log.deinit();
-
-        // Recovery rejects plaintext records when key is present.
-        try std.testing.expectEqual(@as(u64, 0), log.currentLsn());
-
-        _ = try log.append("encrypted-1");
-        _ = try log.append("encrypted-2");
-
-        try std.testing.expectEqual(@as(u64, 2), log.currentLsn());
+        try std.testing.expectEqual(@as(u64, 3), log.currentLsn());
     }
 }
 
