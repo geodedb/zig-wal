@@ -19,6 +19,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Unreleased]: https://gitlab.com/devnw/zig/wal/-/commits/main
 
+## [0.1.24] - 2026-11-15
+
+### Fixed
+
+- Recovery no longer destroys data it cannot read (SONNY-6620).
+  `WriteAheadLog.init` used to truncate the file at the end of the last
+  record it could decode, so a key-mode mismatch or a wrong key wiped the
+  whole WAL and a corrupt record mid-log silently dropped every valid record
+  after it. `init` now classifies the stop point read-only and fails closed,
+  leaving the file untouched, with `error.WalEncryptionMismatch`,
+  `error.WalAuthFailed` or `error.WalCorrupted`. Only a genuine torn tail,
+  with no valid record after the first bad one, is still truncated. The
+  search for valid records past a bad one also finds records after
+  caller-assigned LSN jumps.
+- `init`, compaction's file reopen and `truncateAfter` ignored the result of
+  the seek that positions the write cursor, and libc `lseek` cannot address
+  a Windows handle. They now seek through `std.Io`; `init` returns the
+  error, the other two poison the WAL.
+
+### Added
+
+- `Options.salvage_corrupt_records` (default `false`): opt-in point-in-time
+  recovery that opens a `WalCorrupted` WAL up to the last valid record
+  before the corrupt one. It needs a valid prefix and never applies to a
+  key-mode mismatch or a wrong key.
+- `wal.RecoveryError`, the error set above.
+
+### Changed
+
+- `init` fails on inputs it used to accept by truncating them. Callers that
+  opened a plaintext WAL with a key to start an empty encrypted WAL now get
+  `error.WalEncryptionMismatch`; move or delete the old file first.
+- `init` tightens file permissions (SEC-0021) only after recovery accepts
+  the file, so a refused open changes nothing on disk.
+- thread-pool v0.2.11, aligning with geode.
+
 ## [0.1.19] - 2026-10-11
 
 ### Changed
