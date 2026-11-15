@@ -431,3 +431,52 @@ test "recovery safety: append after torn-tail truncation lands at the record bou
     try std.testing.expectEqual(good.len + plainSize("c"), after.len);
     try std.testing.expectEqualSlices(u8, good, after[0..good.len]);
 }
+
+// ============================================================================
+// LSN gaps and large random tails
+// ============================================================================
+
+fn writeWalWithLsns(dir: std.Io.Dir, lsns: []const u64, payloads: []const []const u8) !void {
+    var log = try wal.WriteAheadLog.init(std.testing.allocator, dir, NAME, .{});
+    defer log.deinit();
+    for (lsns, payloads) |l, p| _ = try log.appendWithLsn(l, p);
+}
+
+test "recovery safety: corruption before an LSN gap fails closed (SONNY-6620)" {
+    // Caller-assigned LSNs may jump (a re-anchor after compaction, a Raft
+    // snapshot boundary). The record after the corrupt one is far past any
+    // dense-LSN window and must still be recognised.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeWalWithLsns(tmp.dir, &.{ 1, 2, 3, 1_000_000, 1_000_001 }, &.{ "a", "b", "c", "anchor", "e" });
+    try flipByte(tmp.dir, 2 * plainSize("a") + record.HEADER_SIZE);
+
+    try expectOpenFailsIntact(tmp.dir, .{}, error.WalCorrupted);
+}
+
+test "recovery safety: corruption before a gapped final record fails closed (SONNY-6620)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeWalWithLsns(tmp.dir, &.{ 1, 2, 500_000 }, &.{ "a", "b", "last" });
+    try flipByte(tmp.dir, plainSize("a") + record.HEADER_SIZE);
+
+    try expectOpenFailsIntact(tmp.dir, .{}, error.WalCorrupted);
+}
+
+test "recovery safety: large random torn record is truncated (SONNY-6620)" {
+    // The only record carries 4 MiB of random payload and is torn. The
+    // successor search walks every offset of that payload; it must reject the
+    // random headers it finds there cheaply and conclude torn tail.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const big = try std.testing.allocator.alloc(u8, 4 * 1024 * 1024);
+    defer std.testing.allocator.free(big);
+    var prng = std.Random.DefaultPrng.init(0x6620);
+    prng.random().bytes(big);
+    try writeWal(tmp.dir, null, &.{big});
+    const full = try readAll(tmp.dir);
+    defer std.testing.allocator.free(full);
+    try writeAll(tmp.dir, full[0 .. full.len - 1]);
+
+    try expectPayloads(tmp.dir, .{}, &.{});
+}
