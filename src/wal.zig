@@ -87,6 +87,15 @@ pub const Options = struct {
     /// be constructed with `max_submitter_queues >= 1` (the library's
     /// default of 0 disables registerSubmitter entirely).
     thread_pool: ?*tp.ThreadPool = null,
+
+    /// Opt-in point-in-time recovery (SONNY-6620). By default `init` refuses
+    /// to open a WAL whose first bad record has valid records after it
+    /// (`error.WalCorrupted`), because truncating there would drop them.
+    /// When `true`, such a WAL is opened up to the last valid record before
+    /// the bad one and everything from the bad record onward is truncated.
+    /// Salvage requires at least one valid record before the bad one and never
+    /// applies to `error.WalEncryptionMismatch` or `error.WalAuthFailed`.
+    salvage_corrupt_records: bool = false,
 };
 
 // ============================================================================
