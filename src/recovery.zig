@@ -58,6 +58,11 @@ pub const RecoveryInfo = struct {
     /// 0 when no records were found. Used by the checkpoint layer to re-validate
     /// the boundary on O(1) startup (SEC-0044/SEC-0046).
     last_record_start: u64 = 0,
+    /// `recoverUpToWithKey` only: the scan stopped because it reached a
+    /// fully valid record with LSN > `until_lsn`, so `valid_end` is a real
+    /// record boundary. False when it stopped at end of file or at a record
+    /// it could not accept (SONNY-6628).
+    stopped_at_watermark: bool = false,
 };
 
 // ============================================================================
@@ -304,7 +309,10 @@ fn scanForward(
             // Stop before including a record past the truncation watermark
             // (SEC-0041). The record is fully validated above, so the boundary
             // is real; we simply do not advance valid_end past it.
-            if (until_lsn) |max| if (rec.lsn > max) break;
+            if (until_lsn) |max| if (rec.lsn > max) {
+                info.stopped_at_watermark = true;
+                break;
+            };
             // Reject non-monotonic LSNs as corruption (SEC-0022).
             if (info.record_count > 0 and rec.lsn <= info.last_lsn) break;
             info.last_record_start = info.valid_end;
@@ -351,7 +359,10 @@ fn scanForward(
 
             // Stop before including a record past the truncation watermark
             // (SEC-0041). CRC has been verified above, so the boundary is real.
-            if (until_lsn) |max| if (lsn > max) break;
+            if (until_lsn) |max| if (lsn > max) {
+                info.stopped_at_watermark = true;
+                break;
+            };
             // Reject non-monotonic LSNs as corruption (SEC-0022).
             if (info.record_count > 0 and lsn <= info.last_lsn) break;
             info.last_record_start = info.valid_end;

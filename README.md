@@ -144,6 +144,12 @@ Recovery runs **automatically** during `init()` — no user action is needed.
 After `init()` returns, the WAL is guaranteed to contain only fully-written,
 integrity-verified records.
 
+`compact()` and `truncateAfter()` re-validate the records they keep, since the
+file can be damaged after `init()`. If a record they would keep cannot be read,
+they fail closed with the same errors and leave the file and the WAL's state
+untouched (SONNY-6620, SONNY-6628). `truncateAfter()` still removes damage that
+lies entirely past its cut point.
+
 ### Recovery Checkpoint (PERF-0013)
 
 Enable `Options.checkpoint = true` for O(1) startup on clean shutdown:

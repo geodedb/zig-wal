@@ -986,6 +986,17 @@ pub const WriteAheadLog = struct {
     /// If `after_lsn` is 0, truncates the entire file (all records removed).
     /// Thread-safe: acquires internal mutex.
     ///
+    /// Fails closed (SONNY-6628): every record it keeps must be readable. If
+    /// the scan stops at a record it cannot accept before it can prove the
+    /// cut point, the file and WAL state are left untouched and it returns
+    /// `error.WalEncryptionMismatch`, `error.WalAuthFailed` or
+    /// `error.WalCorrupted`, as `init` and `compact` do. The cut is proven
+    /// when the scan reaches end of file, reaches a valid record with
+    /// LSN > `after_lsn`, or stops right after the record whose LSN is
+    /// `after_lsn` (LSNs only increase, so nothing after it is kept). Damage
+    /// past the cut point is removed with the tail, and a torn tail with no
+    /// valid record in it may be cut.
+    ///
     /// Cost: O(records up to `after_lsn`). Since SEC-0041 this scan is fully
     /// validated (one buffered read + CRC per plaintext record, or read +
     /// AES-GCM decrypt per encrypted record) rather than the old header-only
@@ -1019,6 +1030,36 @@ pub const WriteAheadLog = struct {
             after_lsn,
         );
         const valid_end = info.valid_end;
+
+        // Never cut through records that must be kept (SONNY-6628). The scan
+        // stops at the first record it cannot accept; unless the cut point is
+        // proven, an unreadable record may carry an LSN <= after_lsn, and
+        // cutting there would silently drop it and the valid records after it.
+        const file_len = try self.file.length(io);
+        const cut_proven = valid_end == file_len or
+            info.stopped_at_watermark or
+            info.last_lsn >= after_lsn;
+        if (!cut_proven) {
+            const verdict = recovery_classify.classifyStop(
+                self.allocator,
+                self.file,
+                file_len,
+                if (self.options.encryption_key) |*k| k else null,
+                info,
+                false,
+            ) catch |err| {
+                wal_log.warn(
+                    "truncateAfter({d}) on '{s}' refused: {s} at byte {d} of {d} before the cut point; the file was not modified",
+                    .{ after_lsn, self.filename, @errorName(err), valid_end, file_len },
+                );
+                return err;
+            };
+            std.debug.assert(verdict == .torn_tail);
+            wal_log.warn(
+                "truncateAfter({d}) on '{s}' also removes a torn tail of {d} byte(s) at byte {d}",
+                .{ after_lsn, self.filename, file_len - valid_end, valid_end },
+            );
+        }
 
         // Truncate the file and reposition the streaming-write cursor.
         try self.file.setLength(io, valid_end);
