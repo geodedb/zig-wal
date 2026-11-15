@@ -509,9 +509,11 @@ for coordination. The WAL library does not provide multiplexing primitives.
 ### Recovery & Compaction: Sequential by Design
 
 Recovery must stop at the first corrupt record for correct truncation
-semantics, making the scan fundamentally sequential. Compaction intentionally
-skips CRC verification (SEC-0027) since recovery has already validated all
-records. Both are I/O-bound, not CPU-bound.
+semantics, making the scan fundamentally sequential. Compaction runs the same
+validated scan (CRC, AES-GCM tag, LSN monotonicity) and refuses to rewrite a
+log with any byte that is not part of a valid record, because the log can be
+damaged after recovery validated it on open (SONNY-6620; this replaces
+SEC-0027's header-only plaintext scan). Both are I/O-bound, not CPU-bound.
 
 ## 7. Implementation Plan
 

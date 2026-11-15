@@ -857,6 +857,13 @@ pub const WriteAheadLog = struct {
     /// If compaction fails the file handle is reopened so the WAL remains
     /// usable, and the original error is propagated.
     ///
+    /// Compaction validates every record first and fails closed, leaving the
+    /// file untouched, if any byte is not part of a valid record: the log may
+    /// have been damaged since `init` validated it (SONNY-6620). It returns
+    /// `error.WalEncryptionMismatch`, `error.WalAuthFailed` or
+    /// `error.WalCorrupted`, as `init` does; reopening the WAL then reports or,
+    /// for a torn tail, truncates the damage.
+    ///
     /// With `options.checkpoint`, a compaction that removes every record
     /// rewrites the checkpoint sidecar with `current_lsn` so the sequence
     /// survives a restart without `deinit` (SONNY-6424); otherwise the stale

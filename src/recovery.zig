@@ -198,7 +198,7 @@ pub fn recoverWithKey(
     file: std.Io.File,
     key: ?*const [32]u8,
 ) !RecoveryInfo {
-    return scanForward(allocator, file, key, null);
+    return scanForward(allocator, file, key, null, null);
 }
 
 /// Scan `file` from the beginning like `recoverWithKey`, but stop at the first
@@ -219,16 +219,44 @@ pub fn recoverUpToWithKey(
     key: ?*const [32]u8,
     until_lsn: u64,
 ) !RecoveryInfo {
-    return scanForward(allocator, file, key, until_lsn);
+    return scanForward(allocator, file, key, until_lsn, null);
 }
 
-/// Shared forward scan for `recoverWithKey` (`until_lsn == null`, scan to EOF)
-/// and `recoverUpToWithKey` (stop after the last record with LSN <= until_lsn).
+/// Where a validated scan crosses an LSN watermark. Filled in by
+/// `scanSplitWithKey` for compaction (SONNY-6620).
+pub const Split = struct {
+    /// Records with LSN <= `up_to_lsn` are below the watermark.
+    up_to_lsn: u64,
+    /// File offset of the first record with LSN > `up_to_lsn`, or null if
+    /// no valid record is above the watermark.
+    first_kept_offset: ?u64 = null,
+    /// Number of valid records with LSN > `up_to_lsn`.
+    records_kept: u64 = 0,
+};
+
+/// Scan `file` from the beginning exactly like `recoverWithKey` (CRC, AEAD,
+/// LSN monotonicity, SEC-0038 mode check) and record in `split` where the
+/// valid records cross `split.up_to_lsn`. The caller compares the returned
+/// `valid_end` with the file length to tell whether every byte was a valid
+/// record.
+pub fn scanSplitWithKey(
+    allocator: std.mem.Allocator,
+    file: std.Io.File,
+    key: ?*const [32]u8,
+    split: *Split,
+) !RecoveryInfo {
+    return scanForward(allocator, file, key, null, split);
+}
+
+/// Shared forward scan for `recoverWithKey` (`until_lsn == null`, scan to EOF),
+/// `recoverUpToWithKey` (stop after the last record with LSN <= until_lsn) and
+/// `scanSplitWithKey` (scan to EOF, tracking the watermark crossing).
 fn scanForward(
     allocator: std.mem.Allocator,
     file: std.Io.File,
     key: ?*const [32]u8,
     until_lsn: ?u64,
+    split: ?*Split,
 ) !RecoveryInfo {
     // 0.16 uses FileSource with positional I/O offset tracking from byte 0.
     var src = record.FileSource.init(file);
@@ -283,6 +311,7 @@ fn scanForward(
             info.last_lsn = rec.lsn;
             info.record_count += 1;
             info.valid_end += blob_result.total_on_disk;
+            if (split) |sp| noteSplit(sp, &info);
         } else if (key != null) {
             // SEC-0038: encryption key is configured but record lacks magic
             // bytes — reject to prevent plaintext record injection into an
@@ -329,6 +358,7 @@ fn scanForward(
             info.last_lsn = lsn;
             info.record_count += 1;
             info.valid_end += @as(u64, record.HEADER_SIZE) + @as(u64, payload_len) + @as(u64, record.CRC_SIZE);
+            if (split) |sp| noteSplit(sp, &info);
         }
     }
 
@@ -337,6 +367,13 @@ fn scanForward(
     // seekTo removed in 0.16 — using positional I/O
 
     return info;
+}
+
+/// Account the record just accepted into `info` against the watermark.
+fn noteSplit(split: *Split, info: *const RecoveryInfo) void {
+    if (info.last_lsn <= split.up_to_lsn) return;
+    if (split.first_kept_offset == null) split.first_kept_offset = info.last_record_start;
+    split.records_kept += 1;
 }
 
 /// Re-validate that a checkpoint's claimed boundary lands on a real, intact
