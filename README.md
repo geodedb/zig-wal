@@ -122,11 +122,24 @@ Recovery runs **automatically** during `init()` — no user action is needed.
 
 - The WAL file is scanned forward from byte 0, validating each record's CRC
   (plaintext) or AES-GCM authentication tag (encrypted).
-- Any partial trailing record (torn write) is truncated.
-- LSN monotonicity is verified — records with non-increasing LSNs are treated
-  as corruption and the file is truncated at the last valid record.
+- LSN monotonicity is verified — a record with a non-increasing LSN is
+  treated as corrupt.
 - Encrypted and plaintext records are detected transparently via magic-byte
   probing.
+- A torn tail — a bad record with no valid record after it — is truncated.
+- Anything else fails closed and leaves the file untouched (SONNY-6620):
+
+  | Error | Cause |
+  |-------|-------|
+  | `error.WalEncryptionMismatch` | Plaintext WAL opened with a key, encrypted WAL opened without one, or plaintext records inside an encrypted WAL |
+  | `error.WalAuthFailed` | No record authenticates under the configured key (wrong key) |
+  | `error.WalCorrupted` | A corrupt record has valid records after it |
+
+  `Options.salvage_corrupt_records = true` opts into point-in-time recovery
+  for `WalCorrupted`: the WAL opens up to the last valid record before the
+  corrupt one and the rest is truncated. It needs at least one valid record
+  before the corrupt one and never applies to the other two errors. The set
+  is exported as `wal.RecoveryError`.
 
 After `init()` returns, the WAL is guaranteed to contain only fully-written,
 integrity-verified records.
