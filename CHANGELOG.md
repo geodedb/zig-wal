@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Unreleased]: https://gitlab.com/devnw/zig/wal/-/commits/main
 
+## [0.1.26] - 2026-11-16
+
+### Changed
+
+- otel v0.1.28 -> v0.1.29, whose slog, json, config and yaml pins now carry
+  thread-pool v0.2.11, so wal and its consumers resolve a single thread-pool
+  (SONNY-6630).
+
 ## [0.1.25] - 2026-11-15
 
 ### Fixed
