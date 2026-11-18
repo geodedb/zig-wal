@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [Unreleased]: https://gitlab.com/devnw/zig/wal/-/commits/main
 
+## [0.1.27] - 2026-11-17
+
+### Changed
+
+- otel v0.1.29 -> v0.1.30, whose tree (slog, json, config, yaml, metrics, tls, grpc-zig v0.1.16) is on thread-pool v0.2.11, so this library and its consumers resolve a single otel and thread-pool (SONNY-6630).
+
 ## [0.1.26] - 2026-11-16
 
 ### Changed
